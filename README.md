@@ -6,6 +6,8 @@ This is a reimplementation, not a port. It behaves like the original because it 
 
 Not affiliated with or endorsed by Microsoft. Windows is a trademark of Microsoft Corporation.
 
+This is the **macOS** branch. Linux lives on the `linux` branch, and Windows on, yes, the `windows` branch. Prebuilt binaries for all three are on the releases page.
+
 ## Build and run
 
 ```sh
