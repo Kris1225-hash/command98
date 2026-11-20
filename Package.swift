@@ -10,7 +10,8 @@ let package = Package(
             name: "command98",
             dependencies: ["CSupport"],
             path: "Sources/command98",
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            linkerSettings: [.linkedLibrary("Shell32", .when(platforms: [.windows]))]
         ),
     ]
 )

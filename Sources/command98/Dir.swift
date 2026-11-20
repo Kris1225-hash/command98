@@ -150,24 +150,15 @@ final class Pager {
 
 extension Shell {
     func statEntry(_ url: URL, name: String, short: String) -> DirEntry? {
-        let path = url.path
-        var ls = stat()
-        var st = stat()
-        let isLink = lstat(path, &ls) == 0 && (ls.st_mode & S_IFMT) == S_IFLNK
-        if stat(path, &st) != 0 {
-            guard isLink else { return nil }
-            st = ls
-        }
+        guard let f = Platform.fileInfo(url.path) else { return nil }
         let dots = name == "." || name == ".."
-        let extra = Attr.get(path)
-        let hidden = !dots && (name.hasPrefix(".") || Platform.hiddenFlag(st) || extra.contains("H"))
-        let system = name == ".DS_Store" || name == ".localized" || name.hasPrefix("._") || extra.contains("S")
-        let isDirectory = (st.st_mode & S_IFMT) == S_IFDIR
+        let hidden = !dots && ((Platform.dotfilesHidden && name.hasPrefix(".")) || f.hidden)
+        let system = name == ".DS_Store" || name == ".localized" || name.hasPrefix("._") || f.system
         return DirEntry(
-            name: name, short: short, isDir: (st.st_mode & S_IFMT) == S_IFDIR, size: (st.st_mode & S_IFMT) == S_IFDIR ? 0 : Int64(st.st_size),
-            mtime: Platform.mtime(st), atime: Platform.atime(st), hidden: hidden,
-            readOnly: access(path, W_OK) != 0, system: system, isLink: isLink,
-            archive: !isDirectory && !extra.contains("-A"))
+            name: name, short: short, isDir: f.isDir, size: f.size,
+            mtime: f.mtime, atime: f.atime, hidden: hidden,
+            readOnly: f.readOnly, system: system, isLink: f.isLink,
+            archive: f.archive)
     }
 
     func readEntries(_ dir: URL, dots: Bool) -> [DirEntry] {
@@ -193,6 +184,7 @@ extension Shell {
     func volumeLabel(_ l: Character) -> String {
         let d = drives.table[l]!
         if let set = Attr.label(d.root.path) { return set }
+        if let v = Platform.volumeInfo(d.root.path) { return String(v.label.uppercased().prefix(11)) }
         let name = d.root.path == "/"
             ? ((try? d.root.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "")
             : d.root.lastPathComponent
@@ -200,6 +192,11 @@ extension Shell {
     }
 
     func serial(_ l: Character) -> String {
+        if let v = Platform.volumeInfo(drives.table[l]!.root.path) {
+            let hex = String(v.serial, radix: 16, uppercase: true)
+            let s = String(repeating: "0", count: 8 - hex.count) + hex
+            return s.prefix(4) + "-" + s.suffix(4)
+        }
         var h: UInt32 = 2_166_136_261
         for b in drives.table[l]!.root.path.utf8 {
             h ^= UInt32(b)
@@ -258,7 +255,7 @@ extension Shell {
         }
         if targets.isEmpty { targets = [""] }
 
-        let pager = Pager(out: c.out, enabled: o.pause && isatty(c.out.fd) == 1)
+        let pager = Pager(out: c.out, enabled: o.pause && Platform.isTTY(c.out.fd))
         var total = (files: 0, bytes: Int64(0), dirs: 0)
         var headerDone = false
         var lastLetter = drives.current

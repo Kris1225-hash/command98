@@ -176,7 +176,7 @@ extension Shell {
                 if a == "N" { return false }
                 if a == "A" { all = true }
             }
-            if access(target.path, W_OK) != 0 {
+            if !Platform.isWritable(target.path) {
                 c.out.line("Access denied")
                 return false
             }

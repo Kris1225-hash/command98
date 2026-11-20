@@ -42,7 +42,7 @@ extension Shell {
         "NLSFUNC": Shell.uNlsfunc, "SCANDISK": Shell.uScandisk, "SORT": Shell.uSort, "START": Shell.uStart,
         "SUBST": Shell.uSubst, "SYS": Shell.uSys, "XCOPY": Shell.uXcopy, "XCOPY32": Shell.uXcopy,
         "COMMAND": Shell.uCommand, "WIN": Shell.uWin, "SETVER": Shell.uSetver, "EMM386": Shell.uEmm386,
-        "SMARTDRV": Shell.uSmartdrv, "MAC": Shell.uMac, "LINUX": Shell.uMac,
+        "SMARTDRV": Shell.uSmartdrv, "MAC": Shell.uMac, "LINUX": Shell.uMac, "NT": Shell.uMac,
     ]
 
     /// (folder under the drive root, file name, size of the real Win98 SE file in bytes)
@@ -114,13 +114,26 @@ extension Shell {
     // MARK: shared helpers
 
     func hostWhich(_ name: String) -> String? {
-        if name.hasPrefix("/") { return access(name, X_OK) == 0 ? name : nil }
-        for dir in hostPath.split(separator: ":") {
-            let p = "\(dir)/\(name)"
-            var st = stat()
-            if stat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, access(p, X_OK) == 0 { return p }
+        #if os(Windows)
+        let exts = Wild.has(name) ? [] : ((name as NSString).pathExtension.isEmpty ? [".exe", ".com"] : [""])
+        let dirs = (name.contains("\\") || name.contains("/")) ? [""] : hostPath.split(separator: ";").map(String.init)
+        for dir in dirs {
+            for e in exts {
+                let p = dir.isEmpty ? name + e : dir + "\\" + name + e
+                if Platform.isExecutable(p) { return p }
+            }
         }
         return nil
+        #else
+        if name.hasPrefix("/") { return Platform.isExecutable(name) ? name : nil }
+        for dir in hostPath.split(separator: ":") {
+            for cand in Set([name, name.lowercased()]) {
+                let p = "\(dir)/\(cand)"
+                if Platform.isExecutable(p) { return p }
+            }
+        }
+        return nil
+        #endif
     }
 
     func dosShow(_ r: Resolved) -> String { drives.dosPath(r.letter, r.comps, long: true) }
@@ -456,7 +469,13 @@ extension Shell {
     }
 
     func uWin(_ c: Ctx) {
-        #if os(Linux)
+        #if os(Windows)
+        guard let ex = hostWhich("explorer") else {
+            c.out.line("Cannot find WIN.COM, unable to continue loading Windows")
+            return
+        }
+        spawn(ex, [], c.io)
+        #elseif os(Linux)
         guard let o = Platform.opener(hostWhich) else {
             c.out.line("Cannot find WIN.COM, unable to continue loading Windows")
             return
@@ -474,6 +493,19 @@ extension Shell {
     /// MAC command [args]: run a macOS program straight from the host PATH, skipping the DOS
     /// search order (so `MAC find . -name x` gets the Unix find, not FIND.EXE).
     func uMac(_ c: Ctx) {
+        #if os(Windows)
+        // NT dir /s, NT ipconfig: hand the whole line to the real cmd.exe, built-ins and all
+        guard !c.tail.trimmingCharacters(in: .whitespaces).isEmpty else {
+            c.out.line("Runs a Windows NT command through cmd.exe: NT command [arguments]")
+            return
+        }
+        guard let cmd = Platform.opener(hostWhich) else {
+            c.out.line("Bad command or file name")
+            return
+        }
+        spawn(cmd, ["/c"] + Tok.posix(c.tail).map(translateArg), c.io)
+        return
+        #endif
         let w = Tok.posix(c.tail)
         guard let prog = w.first else {
             c.out.line("Runs a \(Platform.name) program directly: \(Platform.hostUtility) command [arguments]")
@@ -489,7 +521,12 @@ extension Shell {
 
     func uEdit(_ c: Ctx) {
         let file = Tok.posix(c.tail).first(where: { !$0.hasPrefix("/") }).map(translateArg)
-        let candidates = [envGet("VISUAL"), envGet("EDITOR"), "nano", "vi"].compactMap { $0 }
+        #if os(Windows)
+        let fallback = ["edit", "notepad"]
+        #else
+        let fallback = ["nano", "vi"]
+        #endif
+        let candidates = ([envGet("VISUAL"), envGet("EDITOR")].compactMap { $0 }) + fallback
         for ed in candidates {
             let parts = Tok.posix(ed)
             guard let prog = parts.first, let path = hostWhich(prog) else { continue }
@@ -522,7 +559,12 @@ extension Shell {
             errorLevel = 1
             return
         }
-        #if os(Linux)
+        #if os(Windows)
+        func open(_ what: String, _ extra: [String]) {
+            spawn(opener, ["/c", "start", ""] + (wait ? ["/wait"] : []) + (background ? ["/min"] : [])
+                + [Platform.native(what)] + extra, c.io)
+        }
+        #elseif os(Linux)
         // xdg-open takes exactly one thing and never waits; /W and /M have nothing to hold on to
         _ = (wait, background)
         func open(_ what: String, _ extra: [String]) { spawn(opener, [what], c.io) }
@@ -766,14 +808,14 @@ extension Shell {
         c.out.line(n(total) + " bytes total disk space")
         if root.path != "/" {
             var hidden = (0, Int64(0)), dirs = (0, Int64(0)), files = (0, Int64(0))
-            let keys: [URLResourceKey] = [.isDirectoryKey, .isHiddenKey, .totalFileAllocatedSizeKey]
+            let keys: [URLResourceKey] = [.isDirectoryKey, .isHiddenKey, .totalFileAllocatedSizeKey, .fileSizeKey]
             if let en = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys) {
                 var seen = 0
                 for case let u as URL in en {
                     seen += 1
                     if seen > 500_000 || gInterrupted != 0 { break }
                     guard let v = try? u.resourceValues(forKeys: Set(keys)) else { continue }
-                    let size = Int64(v.totalFileAllocatedSize ?? 0)
+                    let size = Int64(v.totalFileAllocatedSize ?? v.fileSize ?? 0)
                     if v.isDirectory == true {
                         dirs.0 += 1
                         dirs.1 += unit

@@ -171,7 +171,12 @@ final class Drives {
     var current: Character = "C"
 
     func mount(_ letter: Character, _ path: String, sandbox: Bool) {
+        #if os(Windows)
+        // resolvingSymlinks turns "C:\" into the drive-relative "C:", which means something else entirely
+        let u = URL(fileURLWithPath: Platform.native(path), isDirectory: true)
+        #else
         let u = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+        #endif
         table[letter] = Drive(letter: letter, root: u, sandbox: sandbox)
     }
 
@@ -252,17 +257,29 @@ final class Drives {
         "\(l):\\" + (long ? comps : shortComps(l, comps)).joined(separator: "\\")
     }
 
+    /// one spelling for comparing host paths: forward slashes, no trailing slash, and on
+    /// Windows no leading slash before the drive and no case
+    static func norm(_ p: String, keepCase: Bool = false) -> String {
+        var s = p.replacingOccurrences(of: "\\", with: "/")
+        #if os(Windows)
+        let c = Array(s)
+        if c.count >= 3, c[0] == "/", c[2] == ":" { s.removeFirst() }
+        if !keepCase { s = s.lowercased() }
+        #endif
+        while s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
+
     func hostToDos(_ path: String) -> (Character, [String])? {
+        let p = Drives.norm(path)
         var best: (Character, [String], Int)? = nil
         for (l, d) in table {
-            let root = d.root.path
+            let root = Drives.norm(d.root.path)
             var rest: String? = nil
-            if root == "/" {
-                rest = String(path.dropFirst())
-            } else if path == root {
+            if p == root {
                 rest = ""
-            } else if path.hasPrefix(root + "/") {
-                rest = String(path.dropFirst(root.count + 1))
+            } else if p.hasPrefix(root + "/") {
+                rest = String(Drives.norm(path, keepCase: true).dropFirst(root.count + 1))
             }
             if let r = rest, root.count > (best?.2 ?? -1) {
                 best = (l, r.split(separator: "/").map(String.init), root.count)

@@ -162,7 +162,7 @@ extension Shell {
                 }
             }
         }
-        let paging = isatty(c.out.fd) == 1 && isatty(0) == 1
+        let paging = Platform.isTTY(c.out.fd) && Platform.isTTY(0)
         let cols = Platform.termSize()?.cols ?? 80
         let rows = Console.rows()
         var used = 0

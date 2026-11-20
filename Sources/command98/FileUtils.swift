@@ -45,24 +45,8 @@ extension Shell {
                 c.out.line("Not resetting hidden file \(shown)")
                 return
             }
-            var st = stat()
-            guard lstat(path, &st) == 0 else { return }
-            if let r = changes["R"] {
-                let m = r ? st.st_mode & ~mode_t(0o222) : st.st_mode | mode_t(0o200)
-                chmod(path, m & 0o7777)
-            }
-            if let h = changes["H"] {
-                if !Platform.setHiddenFlag(path, h) {
-                    let cur = Attr.get(path)
-                    Attr.set(path, system: cur.contains("S"), noArchive: cur.contains("-A"), hidden: h)
-                }
-            }
-            if changes["S"] != nil || changes["A"] != nil {
-                let cur = Attr.get(path)
-                let sys = changes["S"] ?? cur.contains("S")
-                let noArch = changes["A"].map { !$0 } ?? cur.contains("-A")
-                Attr.set(path, system: sys, noArchive: noArch, hidden: cur.contains("H"))
-            }
+            Platform.setAttributes(path, readOnly: changes["R"], hidden: changes["H"],
+                                   system: changes["S"], archive: changes["A"])
         }
         func walk(_ dir: Resolved, _ pattern: String) {
             let entries = readEntries(drives.url(dir), dots: false)
@@ -450,16 +434,16 @@ extension Shell {
                     count += 1
                     continue
                 }
-                if exists && access(target.path, W_OK) != 0 {
+                if exists && !Platform.isWritable(target.path) {
                     if o.overRO {
-                        chmod(target.path, 0o644)
+                        Platform.setAttributes(target.path, readOnly: false)
                     } else {
                         c.out.line("Access denied")
                         if !o.cont { stop = true; return }
                         continue
                     }
                 }
-                if exists { unlink(target.path) }
+                if exists { try? fm.removeItem(at: target) }
                 guard Platform.copyFile(src.path, target.path) else {
                     c.out.line("Access denied")
                     if !o.cont { stop = true; return }
@@ -467,15 +451,8 @@ extension Shell {
                 }
                 count += 1
                 // fresh copies get the archive bit back and lose read-only, unless /K
-                if !o.keep {
-                    Attr.write(target.path, Attr.key, nil)
-                    var st = stat()
-                    if stat(target.path, &st) == 0 { chmod(target.path, (st.st_mode | 0o200) & 0o7777) }
-                }
-                if o.archiveClear {
-                    let cur = Attr.get(src.path)
-                    Attr.set(src.path, system: cur.contains("S"), noArchive: true, hidden: cur.contains("H"))
-                }
+                if !o.keep { Platform.setAttributes(target.path, readOnly: false, system: false, archive: true) }
+                if o.archiveClear { Platform.setAttributes(src.path, archive: false) }
             }
             guard o.sub else { return }
             for e in entries where e.isDir && !e.isLink && (o.hidden || !e.hidden) {

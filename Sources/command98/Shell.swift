@@ -204,13 +204,14 @@ final class Shell {
     init(drives: Drives) {
         self.drives = drives
         let pe = ProcessInfo.processInfo.environment
-        hostPath = pe["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-        for (k, v) in pe.sorted(by: { $0.key < $1.key }) where k != "PATH" && !k.hasPrefix("_") {
+        // Windows spells it "Path", and the dictionary is case-sensitive
+        hostPath = pe.first { $0.key.uppercased() == "PATH" }?.value ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        for (k, v) in pe.sorted(by: { $0.key < $1.key }) where k.uppercased() != "PATH" && !k.hasPrefix("_") {
             env.append((k, v))
         }
         envSet("COMSPEC", "C:\\COMMAND.COM")
         envSet("PROMPT", "$p$g")
-        let dosPath = hostPath.split(separator: ":").compactMap { p -> String? in
+        let dosPath = hostPath.split(separator: Platform.pathListSeparator).compactMap { p -> String? in
             guard let (l, c) = drives.hostToDos(String(p)), FileManager.default.fileExists(atPath: String(p)) else { return nil }
             return drives.dosPath(l, c)
         }
@@ -328,23 +329,23 @@ final class Shell {
             var tmp: String? = nil
             if !last {
                 pipeCounter += 1
-                tmp = NSTemporaryDirectory() + "command98-\(getpid())-\(pipeCounter).$$$"
-                outFD = open(tmp!, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+                tmp = NSTemporaryDirectory() + "command98-\(Platform.pid)-\(pipeCounter).$$$"
+                outFD = Platform.openWrite(tmp!, append: false) ?? Platform.openWrite(Platform.nullDevice, append: false)!
             }
             runRedirected(seg, IO(inFD: inFD, out: Out(outFD)))
-            if !last { close(outFD) }
-            if inFD != base.inFD { close(inFD) }
-            if let p = prevTmp { unlink(p) }
+            if !last { Platform.closeFD(outFD) }
+            if inFD != base.inFD { Platform.closeFD(inFD) }
+            if let p = prevTmp { try? FileManager.default.removeItem(atPath: p) }
             prevTmp = nil
             inFD = base.inFD
             if let t = tmp {
-                inFD = open(t, O_RDONLY)
+                inFD = Platform.openRead(t) ?? base.inFD
                 prevTmp = t
             }
             if gInterrupted != 0 { break }
         }
-        if inFD != base.inFD { close(inFD) }
-        if let p = prevTmp { unlink(p) }
+        if inFD != base.inFD { Platform.closeFD(inFD) }
+        if let p = prevTmp { try? FileManager.default.removeItem(atPath: p) }
     }
 
     func parseRedirection(_ s: String) -> (command: String, input: String?, output: String?, append: Bool) {
@@ -399,23 +400,19 @@ final class Shell {
 
     func openDos(_ name: String, write: Bool, append: Bool) -> Int32? {
         if let dev = Shell.deviceName(name) {
-            if dev == "CON" { return dup(write ? 1 : 0) }
-            let fd = open("/dev/null", write ? O_WRONLY : O_RDONLY)
-            return fd >= 0 ? fd : nil
+            if dev == "CON" { return Platform.dupFD(write ? 1 : 0) }
+            return write ? Platform.openWrite(Platform.nullDevice, append: false) : Platform.openRead(Platform.nullDevice)
         }
         guard let r = try? drives.resolve(name) else { return nil }
         let path = drives.url(r).path
-        let fd = write
-            ? open(path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0o644)
-            : open(path, O_RDONLY)
-        return fd >= 0 ? fd : nil
+        return write ? Platform.openWrite(path, append: append) : Platform.openRead(path)
     }
 
     func runRedirected(_ seg: String, _ io: IO) {
         let r = parseRedirection(seg)
         var inFD = io.inFD, outFD = io.out.fd
         var opened: [Int32] = []
-        defer { opened.forEach { close($0) } }
+        defer { opened.forEach { Platform.closeFD($0) } }
         if let f = r.input {
             guard let fd = openDos(f, write: false, append: false) else {
                 io.out.line("File not found")
@@ -512,13 +509,7 @@ final class Shell {
         // a deleted DOS utility stays deleted: no sneaking in the Unix tool of the same name
         // (MAC find ... is how you ask for that one)
         if !hasPath && Shell.utilities[name.uppercased()] == nil {
-            for dir in hostPath.split(separator: ":") {
-                for cand in Set([name, name.lowercased()]) {
-                    let p = "\(dir)/\(cand)"
-                    var st = stat()
-                    if stat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, access(p, X_OK) == 0 { return .host(p) }
-                }
-            }
+            if let p = hostWhich(name) { return .host(p) }
         }
         return nil
     }
@@ -544,9 +535,11 @@ final class Shell {
                 return .batch(u, dn)
             }
             let head = (try? FileHandle(forReadingFrom: u).read(upToCount: 64)) ?? nil
-            if let h = head, h.count >= 2, h[h.startIndex] == 0x4D, h[h.startIndex + 1] == 0x5A { return .dosBinary }
+            if let h = head, h.count >= 2, h[h.startIndex] == 0x4D, h[h.startIndex + 1] == 0x5A {
+                return Platform.isNativeMZ(u.path) ? .host(u.path) : .dosBinary
+            }
             if let h = head, let name = Shell.stubName(h) { return .utility(name) }
-            if access(u.path, X_OK) == 0 { return .host(u.path) }
+            if Platform.isExecutable(u.path) { return .host(u.path) }
             if ext == "COM" || ext == "EXE" { return .dosBinary }
         }
         return nil
@@ -556,7 +549,7 @@ final class Shell {
         let c = Array(a)
         guard c.count >= 2, c[1] == ":", c[0].isLetter, drives.table[Character(c[0].uppercased())] != nil,
               let r = try? drives.resolve(a) else { return a }
-        return drives.url(r).path
+        return Platform.native(drives.url(r).path)
     }
 
     func runExternal(_ name: String, _ rest: String, _ io: IO) {
@@ -576,46 +569,22 @@ final class Shell {
     }
 
     func childEnv() -> [String] {
-        var e = env.filter { $0.0.uppercased() != "PATH" }.map { "\($0.0)=\($0.1)" }
+        var e = env.filter { $0.0.uppercased() != "PATH" && $0.0.uppercased() != "COMSPEC" }.map { "\($0.0)=\($0.1)" }
         e.append("PATH=\(hostPath)")
+        // our COMSPEC points at a pretend drive; real programs get the real interpreter
+        if let cs = ProcessInfo.processInfo.environment.first(where: { $0.key.uppercased() == "COMSPEC" })?.value {
+            e.append("COMSPEC=\(cs)")
+        }
         e.append("PWD=\(drives.cwdURL.path)")
         return e
     }
 
     func spawn(_ path: String, _ args: [String], _ io: IO) {
-        #if os(Linux)
-        var fa = posix_spawn_file_actions_t()
-        // single-threaded, so the classic chdir-around-spawn is safe and needs no _np extension
-        let oldCwd = FileManager.default.currentDirectoryPath
-        chdir(drives.cwdURL.path)
-        defer { chdir(oldCwd) }
-        #else
-        var fa: posix_spawn_file_actions_t? = nil
-        #endif
-        posix_spawn_file_actions_init(&fa)
-        defer { posix_spawn_file_actions_destroy(&fa) }
-        if io.inFD != 0 { posix_spawn_file_actions_adddup2(&fa, io.inFD, 0) }
-        if io.out.fd != 1 { posix_spawn_file_actions_adddup2(&fa, io.out.fd, 1) }
-        #if !os(Linux)
-        posix_spawn_file_actions_addchdir_np(&fa, drives.cwdURL.path)
-        #endif
-
-        let argv: [UnsafeMutablePointer<CChar>?] = ([path] + args).map { strdup($0) } + [nil]
-        let envp: [UnsafeMutablePointer<CChar>?] = childEnv().map { strdup($0) } + [nil]
-        defer {
-            argv.forEach { free($0) }
-            envp.forEach { free($0) }
-        }
-        var pid: pid_t = 0
-        let rc = posix_spawn(&pid, path, &fa, nil, argv, envp)
-        guard rc == 0 else {
+        guard let code = Platform.spawn(path, args, inFD: io.inFD, outFD: io.out.fd, cwd: drives.cwdURL.path, env: childEnv()) else {
             io.out.line("Bad command or file name")
             return
         }
-        var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-        let sig = status & 0x7f
-        errorLevel = sig == 0 ? (status >> 8) & 0xff : 128 + sig
+        errorLevel = code
         if batch.isEmpty { gInterrupted = 0 }
     }
 

@@ -1,6 +1,6 @@
 extension Shell {
     static let aliases = [
-        "REN": "RENAME", "XCOPY32": "XCOPY", "LINUX": "MAC", "ERASE": "DEL", "CHDIR": "CD", "MKDIR": "MD", "RMDIR": "RD", "LH": "LOADHIGH",
+        "REN": "RENAME", "XCOPY32": "XCOPY", "LINUX": "MAC", "NT": "MAC", "ERASE": "DEL", "CHDIR": "CD", "MKDIR": "MD", "RMDIR": "RD", "LH": "LOADHIGH",
     ]
 
     static func helpText(_ name: String) -> String {
@@ -333,14 +333,7 @@ extension Shell {
 
         LABEL [drive:][label]
         """,
-        "MAC": """
-        Runs a \(Platform.name) program from the host PATH, skipping the DOS search.
-
-        \(Platform.hostUtility) command [arguments]
-
-        Handy when a DOS utility has the same name: \(Platform.hostUtility) find . -name "*.txt"
-        """,
-        "MEM": """
+        "MAC": Platform.hostHelp,        "MEM": """
         Shows memory use, in the classic layout.
 
         MEM [/C | /D]

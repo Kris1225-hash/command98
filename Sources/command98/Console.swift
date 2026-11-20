@@ -5,7 +5,7 @@ import Foundation
 var gInterrupted: Int32 = 0
 
 func installSignalHandlers() {
-    Platform.installSIGINT { _ in gInterrupted = 1 }
+    Platform.setup()
 }
 
 /// Raw fd writer. Built-ins write through one of these so redirection is just "a different fd".
@@ -13,21 +13,7 @@ final class Out {
     let fd: Int32
     init(_ fd: Int32) { self.fd = fd }
 
-    func raw(_ bytes: [UInt8]) {
-        guard !bytes.isEmpty else { return }
-        bytes.withUnsafeBufferPointer { buf in
-            var off = 0
-            while off < buf.count {
-                let n = Platform.sysWrite(fd, buf.baseAddress! + off, buf.count - off)
-                if n < 0 {
-                    if errno == EINTR { continue }
-                    return
-                }
-                off += n
-            }
-        }
-    }
-
+    func raw(_ bytes: [UInt8]) { Platform.writeAll(fd, bytes) }
     func write(_ s: String) { raw(Array(s.utf8)) }
     func line(_ s: String = "") { write(s + "\n") }
 }
@@ -40,45 +26,18 @@ enum LineResult {
 
 enum Console {
     static let tty = Out(1)
-    static var isTTY: Bool { isatty(0) == 1 }
+    static var isTTY: Bool { Platform.isTTY(0) }
 
     static func rows() -> Int {
         Platform.termSize()?.rows ?? 25
     }
 
-    static func withRaw<T>(_ body: () -> T) -> T {
-        guard isatty(0) == 1 else { return body() }
-        var t = termios()
-        tcgetattr(0, &t)
-        var saved = t
-        t.c_lflag &= ~(tcflag_t(ICANON) | tcflag_t(ECHO))
-        withUnsafeMutableBytes(of: &t.c_cc) { p in
-            p[Int(VMIN)] = 1
-            p[Int(VTIME)] = 0
-        }
-        tcsetattr(0, TCSANOW, &t)
-        defer { tcsetattr(0, TCSANOW, &saved) }
-        return body()
-    }
+    static func withRaw<T>(_ body: () -> T) -> T { Platform.withRaw(body) }
 
     /// -1 = EOF, -2 = interrupted by ^C
-    static func readByte(_ fd: Int32 = 0) -> Int {
-        var b: UInt8 = 0
-        while true {
-            let n = read(fd, &b, 1)
-            if n == 1 { return Int(b) }
-            if n < 0 && errno == EINTR {
-                if gInterrupted != 0 { return -2 }
-                continue
-            }
-            return -1
-        }
-    }
+    static func readByte(_ fd: Int32 = 0) -> Int { Platform.readByte(fd) }
 
-    static func pending(_ ms: Int32) -> Bool {
-        var p = pollfd(fd: 0, events: Int16(POLLIN), revents: 0)
-        return poll(&p, 1, ms) > 0
-    }
+    static func pending(_ ms: Int32) -> Bool { Platform.pending(ms) }
 
     /// One keypress (PAUSE, "Press any key"). Redirected input just consumes one byte, like DOS.
     static func readKey(fd: Int32 = 0) -> Int {

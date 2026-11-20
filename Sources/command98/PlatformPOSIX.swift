@@ -1,3 +1,4 @@
+#if !os(Windows)
 import Foundation
 #if canImport(Darwin)
 @_exported import Darwin
@@ -12,6 +13,9 @@ import CSupport
 // file-scope shims so Platform's own static members don't shadow the C functions
 private func cWrite(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int) -> Int { write(fd, p, n) }
 private func cRename(_ a: String, _ b: String) -> Int32 { rename(a, b) }
+private func cOpen(_ p: String, _ f: Int32, _ m: mode_t) -> Int32 { open(p, f, m) }
+private func cClose(_ fd: Int32) { _ = close(fd) }
+private func cDup(_ fd: Int32) -> Int32 { dup(fd) }
 
 /// Everything that differs between macOS and Linux lives here, so the rest of the
 /// interpreter doesn't have to care which kernel it's lying to.
@@ -35,6 +39,21 @@ enum Platform {
     #endif
     static let product = "Command98 for \(name)"
     static let trashName = name == "Linux" ? "the trash can" : "the Trash"
+    static let dotfilesHidden = true
+    static let hostHelp = """
+    Runs a \(name) program from the host PATH, skipping the DOS search.
+
+    \(hostUtility) command [arguments]
+
+    Handy when a DOS utility has the same name: \(hostUtility) find . -name "*.txt"
+    """
+    static let pathListSeparator: Character = ":"
+    static let nullDevice = "/dev/null"
+    static let attrKey = "com.command98.attr"
+
+    static func setup() { installSIGINT { _ in gInterrupted = 1 } }
+    static func native(_ path: String) -> String { path }
+    static var pid: Int { Int(getpid()) }
 
     // MARK: signals and output
 
@@ -52,8 +71,71 @@ enum Platform {
         sigaction(SIGINT, &act, nil)
     }
 
-    static func sysWrite(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int) -> Int {
-        cWrite(fd, p, n)
+    static func writeAll(_ fd: Int32, _ bytes: [UInt8]) {
+        bytes.withUnsafeBufferPointer { buf in
+            var off = 0
+            while off < buf.count {
+                let n = cWrite(fd, buf.baseAddress! + off, buf.count - off)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    return
+                }
+                off += n
+            }
+        }
+    }
+
+    // MARK: file descriptors
+
+    static func openRead(_ path: String) -> Int32? {
+        let fd = cOpen(path, O_RDONLY, 0)
+        return fd >= 0 ? fd : nil
+    }
+
+    static func openWrite(_ path: String, append: Bool) -> Int32? {
+        let fd = cOpen(path, O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC), 0o644)
+        return fd >= 0 ? fd : nil
+    }
+
+    static func closeFD(_ fd: Int32) { cClose(fd) }
+    static func dupFD(_ fd: Int32) -> Int32 { cDup(fd) }
+
+    // MARK: console
+
+    static func isTTY(_ fd: Int32) -> Bool { isatty(fd) == 1 }
+
+    static func withRaw<T>(_ body: () -> T) -> T {
+        guard isatty(0) == 1 else { return body() }
+        var t = termios()
+        tcgetattr(0, &t)
+        var saved = t
+        t.c_lflag &= ~(tcflag_t(ICANON) | tcflag_t(ECHO))
+        withUnsafeMutableBytes(of: &t.c_cc) { p in
+            p[Int(VMIN)] = 1
+            p[Int(VTIME)] = 0
+        }
+        tcsetattr(0, TCSANOW, &t)
+        defer { tcsetattr(0, TCSANOW, &saved) }
+        return body()
+    }
+
+    /// -1 = EOF, -2 = interrupted by ^C
+    static func readByte(_ fd: Int32) -> Int {
+        var b: UInt8 = 0
+        while true {
+            let n = read(fd, &b, 1)
+            if n == 1 { return Int(b) }
+            if n < 0 && errno == EINTR {
+                if gInterrupted != 0 { return -2 }
+                continue
+            }
+            return -1
+        }
+    }
+
+    static func pending(_ ms: Int32) -> Bool {
+        var p = pollfd(fd: 0, events: Int16(POLLIN), revents: 0)
+        return poll(&p, 1, ms) > 0
     }
 
     static func termSize(_ fd: Int32 = 1) -> (rows: Int, cols: Int)? {
@@ -67,8 +149,96 @@ enum Platform {
         return (Int(w.ws_row), Int(w.ws_col))
     }
 
-    static func rename(_ a: String, _ b: String) -> Int32 {
-        cRename(a, b)
+    static func renameFile(_ a: String, _ b: String) -> Bool { cRename(a, b) == 0 }
+
+    // MARK: file info and attributes
+
+    static func fileInfo(_ path: String) -> FileInfo? {
+        var ls = stat()
+        var st = stat()
+        let isLink = lstat(path, &ls) == 0 && (ls.st_mode & S_IFMT) == S_IFLNK
+        if stat(path, &st) != 0 {
+            guard isLink else { return nil }
+            st = ls
+        }
+        let extra = xattrGet(path, xattrName(attrKey)) ?? ""
+        let isDir = (st.st_mode & S_IFMT) == S_IFDIR
+        return FileInfo(
+            isDir: isDir, isLink: isLink, isRegular: (st.st_mode & S_IFMT) == S_IFREG,
+            size: isDir ? 0 : Int64(st.st_size), mtime: mtime(st), atime: atime(st),
+            readOnly: access(path, W_OK) != 0, hidden: hiddenFlag(st) || extra.contains("H"),
+            system: extra.contains("S"), archive: !isDir && !extra.contains("-A"))
+    }
+
+    /// nil leaves an attribute alone. R is write permission, H the native flag (or our xattr
+    /// where there isn't one), S and A live in our xattr.
+    @discardableResult
+    static func setAttributes(_ path: String, readOnly: Bool? = nil, hidden: Bool? = nil,
+                              system: Bool? = nil, archive: Bool? = nil) -> Bool {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return false }
+        var ok = true
+        if let r = readOnly {
+            let m = r ? st.st_mode & ~mode_t(0o222) : st.st_mode | mode_t(0o200)
+            ok = chmod(path, m & 0o7777) == 0 && ok
+        }
+        var extra = xattrGet(path, xattrName(attrKey)) ?? ""
+        var h = extra.contains("H")
+        if let want = hidden {
+            if setHiddenFlag(path, want) { h = false } else { h = want }
+        }
+        let s = system ?? extra.contains("S")
+        let a = archive ?? !extra.contains("-A")
+        extra = (s ? "S" : "") + (h ? "H" : "") + (a ? "" : "-A")
+        ok = xattrSet(path, attrKey, extra.isEmpty ? nil : extra) && ok
+        return ok
+    }
+
+    static func isExecutable(_ path: String) -> Bool {
+        var st = stat()
+        return stat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG && access(path, X_OK) == 0
+    }
+
+    static func isWritable(_ path: String) -> Bool { access(path, W_OK) == 0 }
+
+    /// an MZ file this OS can run natively (only ever true on Windows)
+    static func isNativeMZ(_ path: String) -> Bool { false }
+
+    /// a real volume's label and serial number (only Windows has those for drive roots)
+    static func volumeInfo(_ path: String) -> (label: String, serial: UInt32)? { nil }
+
+    // MARK: processes
+
+    /// Run a program and wait. Returns the exit status, or nil if it couldn't start.
+    static func spawn(_ path: String, _ args: [String], inFD: Int32, outFD: Int32, cwd: String, env: [String]) -> Int32? {
+        #if os(Linux)
+        var fa = posix_spawn_file_actions_t()
+        // single-threaded, so the classic chdir-around-spawn is safe and needs no _np extension
+        let oldCwd = FileManager.default.currentDirectoryPath
+        chdir(cwd)
+        defer { chdir(oldCwd) }
+        #else
+        var fa: posix_spawn_file_actions_t? = nil
+        #endif
+        posix_spawn_file_actions_init(&fa)
+        defer { posix_spawn_file_actions_destroy(&fa) }
+        if inFD != 0 { posix_spawn_file_actions_adddup2(&fa, inFD, 0) }
+        if outFD != 1 { posix_spawn_file_actions_adddup2(&fa, outFD, 1) }
+        #if !os(Linux)
+        posix_spawn_file_actions_addchdir_np(&fa, cwd)
+        #endif
+        let argv: [UnsafeMutablePointer<CChar>?] = ([path] + args).map { strdup($0) } + [nil]
+        let envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup($0) } + [nil]
+        defer {
+            argv.forEach { free($0) }
+            envp.forEach { free($0) }
+        }
+        var pid: pid_t = 0
+        guard posix_spawn(&pid, path, &fa, nil, argv, envp) == 0 else { return nil }
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        let sig = status & 0x7f
+        return sig == 0 ? (status >> 8) & 0xff : 128 + sig
     }
 
     // MARK: stat
@@ -281,3 +451,4 @@ enum Platform {
         #endif
     }
 }
+#endif

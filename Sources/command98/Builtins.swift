@@ -330,7 +330,7 @@ extension Shell {
             c.out.line(bad)
             return
         }
-        for f in contents { unlink(u.appendingPathComponent(f).path) }
+        for f in contents { try? FileManager.default.removeItem(at: u.appendingPathComponent(f)) }
         if rmdir(u.path) != 0 { c.out.line(bad) }
     }
 
@@ -481,7 +481,7 @@ extension Shell {
             }
             let from = dirURL.appendingPathComponent(s.name).path
             let to = dirURL.appendingPathComponent(target).path
-            if Platform.rename(from, to) != 0 { c.out.line("Duplicate file name or file not found") }
+            if !Platform.renameFile(from, to) { c.out.line("Duplicate file name or file not found") }
         }
     }
 

@@ -114,8 +114,15 @@ if freshSandbox {
 }
 
 if real {
+    #if os(Windows)
+    // on Windows the real drive letters are already DOS drive letters. how convenient.
+    for l in Platform.logicalDrives() { drives.mount(l, "\(l):\\", sandbox: false) }
+    let sandboxLetter = Array("STUVWXYZRQPONMLKJIHGFED").first { drives.table[$0] == nil && cfgDrives[$0] == nil } ?? "S"
+    drives.mount(sandboxLetter, sandboxRoot, sandbox: true)
+    #else
     drives.mount("C", "/", sandbox: false)
     if cfgDrives["S"] == nil { drives.mount("S", sandboxRoot, sandbox: true) }
+    #endif
 } else {
     drives.mount("C", sandboxRoot, sandbox: true)
 }
@@ -128,7 +135,7 @@ for (l, p) in extraMounts {
     if fm.fileExists(atPath: path) { drives.mount(l, path, sandbox: false) }
 }
 
-// in real mode, start where the mac shell was
+// in real mode, start where the host shell was
 if real, let (l, comps) = drives.hostToDos(URL(fileURLWithPath: fm.currentDirectoryPath).resolvingSymlinksInPath().path) {
     drives.current = l
     drives.table[l]!.cwd = comps
