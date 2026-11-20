@@ -1,6 +1,6 @@
 extension Shell {
     static let aliases = [
-        "REN": "RENAME", "XCOPY32": "XCOPY", "ERASE": "DEL", "CHDIR": "CD", "MKDIR": "MD", "RMDIR": "RD", "LH": "LOADHIGH",
+        "REN": "RENAME", "XCOPY32": "XCOPY", "LINUX": "MAC", "ERASE": "DEL", "CHDIR": "CD", "MKDIR": "MD", "RMDIR": "RD", "LH": "LOADHIGH",
     ]
 
     static func helpText(_ name: String) -> String {
@@ -50,7 +50,7 @@ extension Shell {
         The new name can't include a drive or path.
         """,
         "DEL": """
-        Deletes files. Sandbox drives delete for good; other drives use the Trash.
+        Deletes files. Sandbox drives delete for good; other drives use \(Platform.trashName).
 
         DEL [drive:][path]filename [/P]
         ERASE [drive:][path]filename [/P]
@@ -86,12 +86,12 @@ extension Shell {
         PAUSE
         """,
         "DATE": """
-        Shows the date. The clock itself belongs to macOS.
+        Shows the date. The clock itself belongs to \(Platform.name).
 
         DATE [date]
         """,
         "TIME": """
-        Shows the time. The clock itself belongs to macOS.
+        Shows the time. The clock itself belongs to \(Platform.name).
 
         TIME [time]
         """,
@@ -157,7 +157,7 @@ extension Shell {
         PATH [[drive:]path[;...]]
         PATH ;
 
-        PATH ; clears it. macOS's own PATH is still searched as a last resort.
+        PATH ; clears it. \(Platform.name)'s own PATH is still searched as a last resort.
         """,
         "EXIT": """
         Leaves the command interpreter.
@@ -177,7 +177,7 @@ extension Shell {
         ECHO.          prints an empty line
         """,
         "LOCK": """
-        Locks a drive for direct disk access. Purely ceremonial on macOS.
+        Locks a drive for direct disk access. Purely ceremonial on \(Platform.name).
 
         LOCK [drive:]
         """,
@@ -244,7 +244,7 @@ extension Shell {
         ATTRIB [+R | -R] [+A | -A] [+S | -S] [+H | -H] [[drive:][path]filename] [/S]
 
           +  Set.   -  Clear.
-          R  Read-only (write permission)    H  Hidden (the Finder's hidden flag)
+          R  Read-only (write permission)    H  Hidden (dotfiles always are)
           A  Archive                         S  System
           /S Include every subdirectory.
 
@@ -274,7 +274,7 @@ extension Shell {
 
           /Y  Don't ask first.
 
-        Sandbox drives delete for good; other drives use the Trash.
+        Sandbox drives delete for good; other drives use \(Platform.trashName).
         """,
         "DISKCOPY": "Copied floppy disks. There are no floppy disks.",
         "DOSKEY": """
@@ -324,7 +324,7 @@ extension Shell {
         """,
         "FORMAT": "Formatted disks. Now it just asks if you're sure, then says no.",
         "KEYB": """
-        Shows or sets the keyboard code. macOS does the real work.
+        Shows or sets the keyboard code. \(Platform.name) does the real work.
 
         KEYB [xx]
         """,
@@ -334,11 +334,11 @@ extension Shell {
         LABEL [drive:][label]
         """,
         "MAC": """
-        Runs a macOS program from the Mac's PATH, skipping the DOS search.
+        Runs a \(Platform.name) program from the host PATH, skipping the DOS search.
 
-        MAC command [arguments]
+        \(Platform.hostUtility) command [arguments]
 
-        Handy when a DOS utility has the same name: MAC find . -name "*.txt"
+        Handy when a DOS utility has the same name: \(Platform.hostUtility) find . -name "*.txt"
         """,
         "MEM": """
         Shows memory use, in the classic layout.
@@ -372,7 +372,7 @@ extension Shell {
         "NLSFUNC": "Loads national language support, which is what CHCP was waiting for.",
         "SCANDISK": "Checked FAT disks. For APFS, use First Aid in Disk Utility.",
         "SETVER": "Told old programs a different DOS version. Nobody asks anymore.",
-        "SMARTDRV": "Was a disk cache. macOS is one now.",
+        "SMARTDRV": "Was a disk cache. \(Platform.name) is one now.",
         "SORT": """
         Sorts lines of text, ignoring case.
 
@@ -383,7 +383,7 @@ extension Shell {
           /+n  Sort starting at column n.
         """,
         "START": """
-        Opens a file, folder, program or URL the way the Finder would.
+        Opens a file, folder, program or URL the way the desktop would.
 
         START [/W] [/M] [/MAX] [/R] target [arguments]
 
@@ -397,7 +397,7 @@ extension Shell {
 
         SUBST with no parameters lists the current ones.
         """,
-        "SYS": "Copied DOS onto a disk to make it bootable. macOS boots itself.",
+        "SYS": "Copied DOS onto a disk to make it bootable. \(Platform.name) boots itself.",
         "XCOPY": """
         Copies files and whole directory trees.
 
@@ -419,6 +419,6 @@ extension Shell {
 
         COMMAND [/P] [/Y] [/C command | /K command]
         """,
-        "WIN": "Starts Windows. Here, that means the Finder.",
+        "WIN": "Starts Windows. Here, that means the file manager.",
     ]
 }

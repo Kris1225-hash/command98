@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 struct DirEntry {
     let name: String
@@ -158,17 +158,14 @@ extension Shell {
             guard isLink else { return nil }
             st = ls
         }
-        func date(_ t: timespec) -> Date {
-            Date(timeIntervalSince1970: Double(t.tv_sec) + Double(t.tv_nsec) / 1e9)
-        }
         let dots = name == "." || name == ".."
-        let hidden = !dots && (name.hasPrefix(".") || (st.st_flags & UInt32(UF_HIDDEN)) != 0)
         let extra = Attr.get(path)
+        let hidden = !dots && (name.hasPrefix(".") || Platform.hiddenFlag(st) || extra.contains("H"))
         let system = name == ".DS_Store" || name == ".localized" || name.hasPrefix("._") || extra.contains("S")
         let isDirectory = (st.st_mode & S_IFMT) == S_IFDIR
         return DirEntry(
             name: name, short: short, isDir: (st.st_mode & S_IFMT) == S_IFDIR, size: (st.st_mode & S_IFMT) == S_IFDIR ? 0 : Int64(st.st_size),
-            mtime: date(st.st_mtimespec), atime: date(st.st_atimespec), hidden: hidden,
+            mtime: Platform.mtime(st), atime: Platform.atime(st), hidden: hidden,
             readOnly: access(path, W_OK) != 0, system: system, isLink: isLink,
             archive: !isDirectory && !extra.contains("-A"))
     }
@@ -219,14 +216,7 @@ extension Shell {
         out.line(" Volume Serial Number is \(serial(l))")
     }
 
-    func freeBytes(_ u: URL) -> Int64 {
-        if let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            .volumeAvailableCapacityForImportantUsage { return v }
-        if let v = try? u.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity {
-            return Int64(v)
-        }
-        return 0
-    }
+    func freeBytes(_ u: URL) -> Int64 { Platform.freeBytes(u.path) }
 
     /// One row, column-for-column what Win98 printed: 8.3 name, size or <DIR>, date, time, long name.
     func dirLine(_ e: DirEntry, _ o: DirOpts) -> String {

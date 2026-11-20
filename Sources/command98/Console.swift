@@ -1,15 +1,11 @@
 import Foundation
-import Darwin
+
 
 /// Set by the SIGINT handler. Checked by long-running loops (DIR, COPY, FOR, batch).
 var gInterrupted: Int32 = 0
 
 func installSignalHandlers() {
-    var act = sigaction()
-    act.__sigaction_u.__sa_handler = { _ in gInterrupted = 1 }
-    sigemptyset(&act.sa_mask)
-    act.sa_flags = 0 // no SA_RESTART: blocking reads return EINTR so ^C is noticed
-    sigaction(SIGINT, &act, nil)
+    Platform.installSIGINT { _ in gInterrupted = 1 }
 }
 
 /// Raw fd writer. Built-ins write through one of these so redirection is just "a different fd".
@@ -22,7 +18,7 @@ final class Out {
         bytes.withUnsafeBufferPointer { buf in
             var off = 0
             while off < buf.count {
-                let n = Darwin.write(fd, buf.baseAddress! + off, buf.count - off)
+                let n = Platform.sysWrite(fd, buf.baseAddress! + off, buf.count - off)
                 if n < 0 {
                     if errno == EINTR { continue }
                     return
@@ -47,9 +43,7 @@ enum Console {
     static var isTTY: Bool { isatty(0) == 1 }
 
     static func rows() -> Int {
-        var w = winsize()
-        if ioctl(1, TIOCGWINSZ, &w) == 0, w.ws_row > 0 { return Int(w.ws_row) }
-        return 25
+        Platform.termSize()?.rows ?? 25
     }
 
     static func withRaw<T>(_ body: () -> T) -> T {

@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 enum DosError: Error {
     case invalidDrive

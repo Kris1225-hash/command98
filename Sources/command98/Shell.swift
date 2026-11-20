@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 struct Word {
     var text: String
@@ -254,7 +254,7 @@ final class Shell {
                 case "n": out += String(drives.current)
                 case "t": out += Fmt.time24(Date())
                 case "d": out += Fmt.longDate(Date())
-                case "v": out += "Command98 for macOS [Version \(Shell.version)]"
+                case "v": out += "\(Platform.product) [Version \(Shell.version)]"
                 case "_": out += "\n"
                 case "e": out += "\u{1B}"
                 case "h": out += "\u{8}"
@@ -567,7 +567,7 @@ final class Shell {
         case .host(let path):
             spawn(path, Tok.posix(rest).map(translateArg), io)
         case .dosBinary:
-            io.out.line("This program cannot be run in macOS mode.")
+            io.out.line("This program cannot be run in \(Platform.name) mode.")
         case .utility(let u):
             runUtility(u, rest, io)
         case nil:
@@ -583,12 +583,22 @@ final class Shell {
     }
 
     func spawn(_ path: String, _ args: [String], _ io: IO) {
+        #if os(Linux)
+        var fa = posix_spawn_file_actions_t()
+        // single-threaded, so the classic chdir-around-spawn is safe and needs no _np extension
+        let oldCwd = FileManager.default.currentDirectoryPath
+        chdir(drives.cwdURL.path)
+        defer { chdir(oldCwd) }
+        #else
         var fa: posix_spawn_file_actions_t? = nil
+        #endif
         posix_spawn_file_actions_init(&fa)
         defer { posix_spawn_file_actions_destroy(&fa) }
         if io.inFD != 0 { posix_spawn_file_actions_adddup2(&fa, io.inFD, 0) }
         if io.out.fd != 1 { posix_spawn_file_actions_adddup2(&fa, io.out.fd, 1) }
+        #if !os(Linux)
         posix_spawn_file_actions_addchdir_np(&fa, drives.cwdURL.path)
+        #endif
 
         let argv: [UnsafeMutablePointer<CChar>?] = ([path] + args).map { strdup($0) } + [nil]
         let envp: [UnsafeMutablePointer<CChar>?] = childEnv().map { strdup($0) } + [nil]
@@ -618,7 +628,7 @@ final class Shell {
         }
         var text = String(decoding: data, as: UTF8.self)
         if let z = text.firstIndex(of: "\u{1A}") { text = String(text[..<z]) } // ^Z is end of file
-        let lines = text.components(separatedBy: "\n").map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
+        let lines = Shell.textLines(text, keepLast: true)
         let ctx = BatchContext(dosName: dosName, lines: lines, params: params)
 
         // running a batch file from a batch file without CALL replaces it (no return)

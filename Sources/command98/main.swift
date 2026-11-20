@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 installSignalHandlers()
 
@@ -9,7 +9,7 @@ func expandTilde(_ p: String) -> String { p.hasPrefix("~") ? home + p.dropFirst(
 
 func usage() {
     Console.tty.write("""
-    command98 - a native arm64 re-creation of the Windows 98 SE command interpreter
+    command98 - a native re-creation of the Windows 98 SE command interpreter
 
     command98 [/C command | /K command] [/P] [/Y] [--real | --sandbox] [--mount X=path ...]
 
@@ -34,7 +34,7 @@ if !fm.fileExists(atPath: cfgPath) {
     ; command98 drive map. one drive per line: LETTER=path
     ; C: is a sandbox folder unless REAL=yes, which makes C:\\ the real root (/)
     ; and moves the sandbox to S:.
-    ; DEL on the sandbox deletes for real. on every other drive it goes to the Trash.
+    ; DEL on the sandbox deletes for real. on every other drive it goes to the trash.
     C=~/DOSROOT
     ; D=~/Downloads
     REAL=no
@@ -156,7 +156,7 @@ if let c = runC {
 }
 
 if Console.isTTY {
-    Console.tty.write("\nCommand98 for macOS arm64 [Version \(Shell.version)]\n")
+    Console.tty.write("\n\(Platform.product) \(Platform.arch) [Version \(Shell.version)]\n")
     Console.tty.write("   a from-scratch tribute to the Windows 98 SE command interpreter\n\n")
 }
 

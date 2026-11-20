@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 /// Extra DOS attributes that macOS has no flag for (system, cleared archive) and volume
 /// labels live in extended attributes, so they survive across sessions.
@@ -8,25 +8,19 @@ enum Attr {
     static let labelKey = "com.command98.label"
 
     static func read(_ path: String, _ name: String) -> String? {
-        let n = getxattr(path, name, nil, 0, 0, 0)
-        guard n >= 0 else { return nil }
-        var buf = [UInt8](repeating: 0, count: n)
-        guard getxattr(path, name, &buf, n, 0, 0) == n else { return nil }
-        return String(decoding: buf, as: UTF8.self)
+        Platform.xattrGet(path, Platform.xattrName(name))
     }
 
     @discardableResult
     static func write(_ path: String, _ name: String, _ value: String?) -> Bool {
-        guard let value else { return removexattr(path, name, 0) == 0 || errno == ENOATTR }
-        let b = Array(value.utf8)
-        return setxattr(path, name, b, b.count, 0, 0) == 0
+        Platform.xattrSet(path, name, value)
     }
 
-    /// "S" = system, "-A" = archive bit cleared
+    /// "S" = system, "-A" = archive bit cleared, "H" = hidden (where the OS has no hidden flag)
     static func get(_ path: String) -> String { read(path, key) ?? "" }
     @discardableResult
-    static func set(_ path: String, system: Bool, noArchive: Bool) -> Bool {
-        let v = (system ? "S" : "") + (noArchive ? "-A" : "")
+    static func set(_ path: String, system: Bool, noArchive: Bool, hidden: Bool = false) -> Bool {
+        let v = (system ? "S" : "") + (hidden ? "H" : "") + (noArchive ? "-A" : "")
         return write(path, key, v.isEmpty ? nil : v)
     }
 
@@ -48,7 +42,7 @@ extension Shell {
         "NLSFUNC": Shell.uNlsfunc, "SCANDISK": Shell.uScandisk, "SORT": Shell.uSort, "START": Shell.uStart,
         "SUBST": Shell.uSubst, "SYS": Shell.uSys, "XCOPY": Shell.uXcopy, "XCOPY32": Shell.uXcopy,
         "COMMAND": Shell.uCommand, "WIN": Shell.uWin, "SETVER": Shell.uSetver, "EMM386": Shell.uEmm386,
-        "SMARTDRV": Shell.uSmartdrv, "MAC": Shell.uMac,
+        "SMARTDRV": Shell.uSmartdrv, "MAC": Shell.uMac, "LINUX": Shell.uMac,
     ]
 
     /// (folder under the drive root, file name, size of the real Win98 SE file in bytes)
@@ -68,7 +62,7 @@ extension Shell {
         ("WINDOWS\\COMMAND", "SCANDISK.EXE", 143818), ("WINDOWS\\COMMAND", "SORT.EXE", 25882),
         ("WINDOWS\\COMMAND", "START.EXE", 28672), ("WINDOWS\\COMMAND", "SUBST.EXE", 17904),
         ("WINDOWS\\COMMAND", "SYS.COM", 18967), ("WINDOWS\\COMMAND", "XCOPY.EXE", 3878),
-        ("WINDOWS\\COMMAND", "XCOPY32.EXE", 3878), ("WINDOWS\\COMMAND", "MAC.COM", 2026),
+        ("WINDOWS\\COMMAND", "XCOPY32.EXE", 3878), ("WINDOWS\\COMMAND", Platform.hostUtility + ".COM", 2026),
     ]
     static let stubVersion = "1"
 
@@ -101,7 +95,7 @@ extension Shell {
             text += "Delete it and \(name) is gone, same as deleting the real one in 1998.\r\n\u{1A}"
             var data = Data(text.utf8)
             if data.count < size { data.append(Data(count: size - data.count)) }
-            fm.createFile(atPath: u.path, contents: data)
+            _ = fm.createFile(atPath: u.path, contents: data)
             try? fm.setAttributes([.modificationDate: stamp], ofItemAtPath: u.path)
         }
         Attr.write(cmdDir.path, markerKey, stubVersion)
@@ -160,9 +154,22 @@ extension Shell {
         return String(decoding: Shell.cutZ(d), as: UTF8.self)
     }
 
-    static func textLines(_ s: String) -> [String] {
-        var ls = s.components(separatedBy: "\n").map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
-        if ls.last == "" { ls.removeLast() }
+    static func textLines(_ s: String, keepLast: Bool = false) -> [String] {
+        // by unicode scalar: Swift counts "\r\n" as ONE Character, so splitting on "\n" misses it
+        var ls: [String] = []
+        var cur = String.UnicodeScalarView()
+        var prevCR = false
+        for u in s.unicodeScalars {
+            if u == "\n" {
+                if prevCR { cur.removeLast() }
+                ls.append(String(cur))
+                cur = String.UnicodeScalarView()
+            } else {
+                cur.append(u)
+            }
+            prevCR = u == "\r"
+        }
+        if keepLast || !cur.isEmpty { ls.append(String(cur)) }
         return ls
     }
 
@@ -282,25 +289,16 @@ extension Shell {
     // MARK: MEM
 
     func uMem(_ c: Ctx) {
-        let phys = Int64(ProcessInfo.processInfo.physicalMemory) / 1024
-        var stats = vm_statistics64()
-        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size)
-        let kr = withUnsafeMutablePointer(to: &stats) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
-            }
-        }
-        let page = Int64(vm_kernel_page_size) / 1024
-        let freeK = kr == KERN_SUCCESS ? Int64(stats.free_count + stats.inactive_count) * page : phys / 2
+        let (phys, freeK) = Platform.memoryK()
         let xmsTotal = phys - 1024
         let xmsFree = min(freeK, xmsTotal)
         let convUsed: Int64 = Doskey.installed ? 71 : 64
 
         func k(_ n: Int64) -> String { Fmt.num(n) + "K" }
         func row(_ name: String, _ t: Int64, _ u: Int64, _ f: Int64) -> String {
-            Fmt.pad(name, 16) + Fmt.lpad(k(t), 13) + Fmt.lpad(k(u), 13) + Fmt.lpad(k(f), 13)
+            Fmt.pad(name, 16) + Fmt.lpad(k(t), 14) + Fmt.lpad(k(u), 13) + Fmt.lpad(k(f), 13)
         }
-        let rule = "----------------  -----------  -----------  -----------"
+        let rule = "----------------  ------------  -----------  -----------"
 
         if c.has("/C") || c.has("/CLASSIFY") || c.has("/D") || c.has("/DEBUG") {
             c.out.line()
@@ -319,7 +317,7 @@ extension Shell {
             }
         }
         c.out.line()
-        c.out.line("Memory Type          Total         Used         Free")
+        c.out.line("Memory Type           Total         Used         Free")
         c.out.line(rule)
         c.out.line(row("Conventional", 640, convUsed, 640 - convUsed))
         c.out.line(row("Upper", 0, 0, 0))
@@ -340,20 +338,18 @@ extension Shell {
 
     func uMode(_ c: Ctx) {
         func status() {
-            var w = winsize()
-            let ok = ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_col > 0
+            let sz = Platform.termSize()
             c.out.line()
             c.out.line("Status for device CON:")
             c.out.line("----------------------")
-            c.out.line("Columns=\(ok ? Int(w.ws_col) : 80)")
-            c.out.line("Lines=\(ok ? Int(w.ws_row) : 25)")
+            c.out.line("Columns=\(sz?.cols ?? 80)")
+            c.out.line("Lines=\(sz?.rows ?? 25)")
             c.out.line()
             c.out.line("Code page operation not supported on this device")
         }
         func resize(cols: Int?, lines: Int?) {
-            var w = winsize()
-            _ = ioctl(1, TIOCGWINSZ, &w)
-            let r = lines ?? Int(w.ws_row), cl = cols ?? Int(w.ws_col)
+            let sz = Platform.termSize()
+            let r = lines ?? sz?.rows ?? 25, cl = cols ?? sz?.cols ?? 80
             Console.tty.write("\u{1B}[8;\(r);\(cl)t")
         }
         let p = Tok.words(c.rest, seps: [" ", "\t", ","]).map { $0.text.uppercased() }
@@ -418,7 +414,7 @@ extension Shell {
     func uEmm386(_ c: Ctx) { c.out.line("EMM386 driver not installed.") }
 
     func uSmartdrv(_ c: Ctx) {
-        c.out.line("SMARTDrive is retired. macOS already caches every disk it can see.")
+        c.out.line("SMARTDrive is retired. \(Platform.name) already caches every disk it can see.")
     }
 
     func uFormat(_ c: Ctx) {
@@ -445,7 +441,7 @@ extension Shell {
     }
 
     func uSys(_ c: Ctx) {
-        c.out.line("No system to transfer. macOS boots itself these days.")
+        c.out.line("No system to transfer. \(Platform.name) boots itself these days.")
         errorLevel = 1
     }
 
@@ -460,11 +456,19 @@ extension Shell {
     }
 
     func uWin(_ c: Ctx) {
+        #if os(Linux)
+        guard let o = Platform.opener(hostWhich) else {
+            c.out.line("Cannot find WIN.COM, unable to continue loading Windows")
+            return
+        }
+        spawn(o, [envGet("HOME") ?? "/"], c.io)
+        #else
         guard FileManager.default.fileExists(atPath: "/System/Library/CoreServices/Finder.app") else {
             c.out.line("Cannot find WIN.COM, unable to continue loading Windows")
             return
         }
         spawn("/usr/bin/open", ["-a", "Finder"], c.io)
+        #endif
     }
 
     /// MAC command [args]: run a macOS program straight from the host PATH, skipping the DOS
@@ -472,7 +476,7 @@ extension Shell {
     func uMac(_ c: Ctx) {
         let w = Tok.posix(c.tail)
         guard let prog = w.first else {
-            c.out.line("Runs a macOS program directly: MAC command [arguments]")
+            c.out.line("Runs a \(Platform.name) program directly: \(Platform.hostUtility) command [arguments]")
             return
         }
         guard let p = hostWhich(prog) else {
@@ -513,25 +517,43 @@ extension Shell {
             c.out.line("Required parameter missing")
             return
         }
+        guard let opener = Platform.opener(hostWhich) else {
+            c.out.line("Cannot find the file '\(target)' (or one of its components).")
+            errorLevel = 1
+            return
+        }
+        #if os(Linux)
+        // xdg-open takes exactly one thing and never waits; /W and /M have nothing to hold on to
+        _ = (wait, background)
+        func open(_ what: String, _ extra: [String]) { spawn(opener, [what], c.io) }
+        #else
         var openArgs: [String] = []
         if wait { openArgs.append("-W") }
         if background { openArgs.append("-g") }
+        func open(_ what: String, _ extra: [String]) {
+            spawn(opener, openArgs + [what] + (extra.isEmpty ? [] : ["--args"] + extra), c.io)
+        }
+        #endif
         let rest = words.dropFirst().map(translateArg)
         if target.contains("://") || target.hasPrefix("mailto:") {
-            spawn("/usr/bin/open", openArgs + [target], c.io)
+            open(target, [])
             return
         }
         if let r = try? drives.resolve(target), r.exists {
-            spawn("/usr/bin/open", openArgs + [drives.url(r).path] + (rest.isEmpty ? [] : ["--args"] + rest), c.io)
+            open(drives.url(r).path, rest)
             return
         }
         switch findProgram(target) {
         case .host(let p):
-            spawn("/usr/bin/open", openArgs + [p] + (rest.isEmpty ? [] : ["--args"] + rest), c.io)
+            #if os(Linux)
+            spawn(p, rest, c.io)
+            #else
+            open(p, rest)
+            #endif
         case .batch, .utility:
             runLine(c.tail.replacingOccurrences(of: "/W ", with: ""), io: c.io)
         case .dosBinary:
-            c.out.line("This program cannot be run in macOS mode.")
+            c.out.line("This program cannot be run in \(Platform.name) mode.")
         case nil:
             c.out.line("Cannot find the file '\(target)' (or one of its components).")
             errorLevel = 1
@@ -614,7 +636,7 @@ extension Shell {
             return
         }
         if Console.isTTY {
-            Console.tty.write("\nCommand98 for macOS arm64 [Version \(Shell.version)]\n")
+            Console.tty.write("\n\(Platform.product) \(Platform.arch) [Version \(Shell.version)]\n")
             Console.tty.write("   a from-scratch tribute to the Windows 98 SE command interpreter\n\n")
         }
         if let k = runK { child.runLine(k) }
@@ -728,14 +750,13 @@ extension Shell {
             return
         }
         let root = drives.table[l]!.root
-        var fs = statfs()
-        guard statfs(root.path, &fs) == 0 else {
+        guard let ds = Platform.diskStats(root.path) else {
             c.out.line("CHKDSK not available on drive \(l)")
             return
         }
-        let unit = Int64(fs.f_bsize)
-        let total = Int64(fs.f_blocks) * unit
-        let avail = Int64(fs.f_bavail) * unit
+        let unit = ds.unit
+        let total = ds.total * unit
+        let avail = ds.avail * unit
         func n(_ v: Int64) -> String { Fmt.lpad(Fmt.num(v), 16) }
         let created = (try? root.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
         c.out.line()
@@ -772,12 +793,12 @@ extension Shell {
         c.out.line(n(avail) + " bytes available on disk")
         c.out.line()
         c.out.line(n(unit) + " bytes in each allocation unit")
-        c.out.line(n(Int64(fs.f_blocks)) + " total allocation units on disk")
-        c.out.line(n(Int64(fs.f_bavail)) + " available allocation units on disk")
+        c.out.line(n(ds.total) + " total allocation units on disk")
+        c.out.line(n(ds.avail) + " available allocation units on disk")
         c.out.line()
         c.out.line(n(655_360) + " total bytes memory")
         c.out.line(n(589_824) + " bytes free")
         c.out.line()
-        c.out.line("CHKDSK only looks. On a Mac, First Aid in Disk Utility does the fixing.")
+        c.out.line(Platform.fixer)
     }
 }

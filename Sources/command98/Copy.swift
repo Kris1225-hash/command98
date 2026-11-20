@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 enum CopySource {
     case con
@@ -261,7 +261,7 @@ extension Shell {
             guard let ok = overwriteOK(target) else { break }
             if !ok { continue }
             if let src = s.url {
-                if copyfile(src.path, target.path, nil, copyfile_flags_t(COPYFILE_ALL)) == 0 {
+                if Platform.copyFile(src.path, target.path) {
                     count += 1
                 } else {
                     c.out.line("Access denied")

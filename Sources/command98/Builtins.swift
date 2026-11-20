@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 extension Shell {
     /// Same 40 names, same order as the table at transient offset 0x8876 in the real COMMAND.COM.
@@ -57,7 +57,7 @@ extension Shell {
         if drives.table[letter]!.sandbox {
             try FileManager.default.removeItem(at: u)
         } else {
-            try FileManager.default.trashItem(at: u, resultingItemURL: nil)
+            try Platform.trash(u)
         }
     }
 
@@ -74,7 +74,7 @@ extension Shell {
 
     func cmdVer(_ c: Ctx) {
         c.out.line()
-        c.out.line("Command98 for macOS [Version \(Shell.version)]")
+        c.out.line("\(Platform.product) [Version \(Shell.version)]")
         c.out.line()
     }
 
@@ -187,7 +187,7 @@ extension Shell {
     }
 
     func dateTime(_ c: Ctx, current: String, ask: String, valid: (String) -> Bool, bad: String) {
-        let refuse = "The clock belongs to macOS now. Use System Settings to change it."
+        let refuse = Platform.clockOwner
         if let p = c.params.first {
             c.out.line(valid(p) ? refuse : bad)
             return
@@ -481,7 +481,7 @@ extension Shell {
             }
             let from = dirURL.appendingPathComponent(s.name).path
             let to = dirURL.appendingPathComponent(target).path
-            if Darwin.rename(from, to) != 0 { c.out.line("Duplicate file name or file not found") }
+            if Platform.rename(from, to) != 0 { c.out.line("Duplicate file name or file not found") }
         }
     }
 

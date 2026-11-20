@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 extension Shell {
     // MARK: ATTRIB
@@ -52,14 +52,16 @@ extension Shell {
                 chmod(path, m & 0o7777)
             }
             if let h = changes["H"] {
-                let f = h ? st.st_flags | UInt32(UF_HIDDEN) : st.st_flags & ~UInt32(UF_HIDDEN)
-                chflags(path, f)
+                if !Platform.setHiddenFlag(path, h) {
+                    let cur = Attr.get(path)
+                    Attr.set(path, system: cur.contains("S"), noArchive: cur.contains("-A"), hidden: h)
+                }
             }
             if changes["S"] != nil || changes["A"] != nil {
                 let cur = Attr.get(path)
                 let sys = changes["S"] ?? cur.contains("S")
                 let noArch = changes["A"].map { !$0 } ?? cur.contains("-A")
-                Attr.set(path, system: sys, noArchive: noArch)
+                Attr.set(path, system: sys, noArchive: noArch, hidden: cur.contains("H"))
             }
         }
         func walk(_ dir: Resolved, _ pattern: String) {
@@ -458,7 +460,7 @@ extension Shell {
                     }
                 }
                 if exists { unlink(target.path) }
-                guard copyfile(src.path, target.path, nil, copyfile_flags_t(COPYFILE_ALL)) == 0 else {
+                guard Platform.copyFile(src.path, target.path) else {
                     c.out.line("Access denied")
                     if !o.cont { stop = true; return }
                     continue
@@ -472,7 +474,7 @@ extension Shell {
                 }
                 if o.archiveClear {
                     let cur = Attr.get(src.path)
-                    Attr.set(src.path, system: cur.contains("S"), noArchive: true)
+                    Attr.set(src.path, system: cur.contains("S"), noArchive: true, hidden: cur.contains("H"))
                 }
             }
             guard o.sub else { return }

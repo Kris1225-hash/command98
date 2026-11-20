@@ -1,5 +1,5 @@
 import Foundation
-import Darwin
+
 
 extension Shell {
     func fileText(_ u: URL) -> String? {
@@ -163,8 +163,7 @@ extension Shell {
             }
         }
         let paging = isatty(c.out.fd) == 1 && isatty(0) == 1
-        var w = winsize()
-        let cols = ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_col > 0 ? Int(w.ws_col) : 80
+        let cols = Platform.termSize()?.cols ?? 80
         let rows = Console.rows()
         var used = 0
         for t in texts {
