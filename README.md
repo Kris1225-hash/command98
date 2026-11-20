@@ -1,0 +1,68 @@
+# command98
+
+A native arm64 macOS re-creation of the Windows 98 SE command interpreter (`COMMAND.COM` 4.10.2222), written in Swift from scratch.
+
+This is a reimplementation, not a port. It behaves like the original because it was built from reverse-engineering notes (command table, dispatch table, DIR switch parsers). None of Microsoft's code or text was copied.
+
+Not affiliated with or endorsed by Microsoft. Windows is a trademark of Microsoft Corporation.
+
+## Build and run
+
+```sh
+swift build -c release
+cp .build/release/command98 ~/.local/bin/
+command98
+```
+
+## Drives
+
+On first run you get `~/.command98.ini` and a sandbox folder at `~/DOSROOT`, which is mounted as `C:\`.
+
+```ini
+C=~/DOSROOT      ; the sandbox
+D=~/Downloads    ; any other mac folder as a drive
+REAL=no          ; yes = C:\ is the real /, and the sandbox moves to S:
+```
+
+There are also command-line flags: `--real`, `--sandbox` and `--mount X=path`.
+
+**DEL on the sandbox deletes for real. On every other drive it moves files to the Trash.**
+
+## What's in it
+
+- All 40 internal commands, in the original table order: DIR CALL CHCP RENAME REN ERASE DEL TYPE REM COPY PAUSE DATE TIME VER VOL CD CHDIR MD MKDIR RD RMDIR BREAK VERIFY SET PROMPT PATH EXIT CTTY ECHO LOCK UNLOCK GOTO SHIFT IF FOR CLS TRUENAME LOADHIGH LH LFNFOR
+- `DIR` with the original column layout, 8.3 short names (`PROGRA~1`) and the long name on the right, plus `/A:RHSvDA`, `/O:NEDSGAC`, `/W /B /S /P /L /4 /-C` and `DIRCMD`
+- Batch files: `%0`–`%9`, `%VAR%`, `SHIFT`, `GOTO` (8-character labels), `CALL`, `IF [NOT] ERRORLEVEL/EXIST/==`, `FOR %%x IN (...) DO`, `^Z` as end of file, and the "Terminate batch job (Y/N)?" prompt
+- `>`, `>>`, `<` and `|` (the pipe goes through temp files, like DOS did). `NUL`, `CON` and `PRN` work as device names
+- Search order is `.COM` → `.EXE` → `.BAT` → bare executable, then macOS's own `PATH`. So `ls` just works. Real DOS executables get "This program cannot be run in macOS mode."
+- Line editing the 1998 way: F1 or → copies one character of the last line, F3 copies the rest, Esc cancels the line. There's no up-arrow history, because that was DOSKEY's job.
+- `/C`, `/K`, `/P`, and `/Y` (step through a batch file line by line)
+
+## Utilities (`C:\WINDOWS\COMMAND`)
+
+The external commands live where Win98 kept them, as stub files on the sandbox drive with the real 1999 file sizes and dates. They're first in `PATH`. Delete `FIND.EXE` and `FIND` is gone, just like in 1998. Rename a stub and it still runs, like renaming a real `.EXE`.
+
+- **Text:** `FIND` (`/V /C /N /I`, sets errorlevel), `SORT` (`/R /+n`), `MORE`, `FC` (text diff with resync, or `/B` binary)
+- **Files:** `XCOPY`/`XCOPY32` (`/S /E /I /F /L /H /R /T /U /K /N /D[:date] /A /M /P /W /C /Q /Y`, plus the "file or directory?" question and "Cannot perform a cyclic copy"), `MOVE`, `DELTREE`, `ATTRIB` (`+R` is write permission, `+H` is the Finder's hidden flag, `S` and `A` are stored in an xattr)
+- **Drives:** `SUBST`, `LABEL` (stored in an xattr, so it sticks), `CHKDSK` (looks but never touches)
+- **Shell:** `DOSKEY` (history, editing, F7/F8, macros with `$1-$9 $* $T`), `CHOICE` (`/C /N /S /T`), `COMMAND` (a nested interpreter; `EXIT` comes back), `START` (opens files, folders, apps and URLs), `EDIT` (`$EDITOR`, nano or vi)
+- **System:** `MEM` (the classic table, with your real RAM as XMS), `MODE CON COLS= LINES=` (actually resizes the terminal), `KEYB`, `NLSFUNC` (after which `CHCP 850` works)
+- **Retired with dignity:** `FORMAT` asks if you're sure and then refuses. `FDISK`, `SYS`, `SCANDISK`, `DISKCOPY`, `EMM386`, `SMARTDRV` and `SETVER` explain themselves. `WIN` opens the Finder.
+- **`MAC command`** runs a macOS program directly, skipping the DOS search. A DOS utility name never falls through to the Unix tool of the same name, so use `MAC find . -name x` for that one.
+
+## Faithful quirks, on purpose
+
+- `ECHO OFF` at the prompt hides the prompt.
+- `echo 50% off` prints `50 off`.
+- `IF EXIST` is false for directories, so use `IF EXIST DIR\NUL`.
+- `FOR` hands out 8.3 names unless you run `LFNFOR ON`.
+- `CHCP 850` says `NLSFUNC not installed`.
+- `CD D:\X` changes D's directory but doesn't switch drives.
+- `cd...` goes up two levels.
+- `REM > file` creates an empty file.
+- `COPY *.TXT ALL.TXT` concatenates the files.
+- `COPY CON` reads until ^Z.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
