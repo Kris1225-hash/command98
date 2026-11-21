@@ -295,11 +295,19 @@ final class Shell {
                 }
                 lastLine = l
                 Doskey.remember(l)
-                if let cmds = Doskey.expand(l) {
-                    for cmd in cmds where !exitRequested { runLine(cmd) }
-                } else {
-                    runLine(l)
+                // redirected input: ^Z is end of file, same as in a batch file
+                var line = l
+                var hitEOF = false
+                if !tty, let z = line.firstIndex(of: "\u{1A}") {
+                    line = String(line[..<z])
+                    hitEOF = true
                 }
+                if let cmds = Doskey.expand(line) {
+                    for cmd in cmds where !exitRequested { runLine(expandTyped(cmd)) }
+                } else {
+                    runLine(expandTyped(line))
+                }
+                if hitEOF { return }
                 needBlank = true
             }
         }
@@ -670,6 +678,26 @@ final class Shell {
             guard Console.ask("\(shown) [Enter=Y,Esc=N]?", "YN\r\u{1B}").map({ $0 == "Y" || $0 == "\r" }) == true else { return }
         }
         runLine(line)
+    }
+
+    /// Typed at the prompt, DOS 7 expands %VAR% too, but only names that exist: anything
+    /// else (FOR's %f, %1, a stray %) stays literal, so `for %f in (*) do echo %f` still works.
+    func expandTyped(_ s: String) -> String {
+        guard s.contains("%") else { return s }
+        var out = ""
+        let c = Array(s)
+        var i = 0
+        while i < c.count {
+            if c[i] == "%", let j = c[(i + 1)...].firstIndex(of: "%"), j > i + 1,
+               let v = envGet(String(c[(i + 1)..<j])) {
+                out += v
+                i = j + 1
+                continue
+            }
+            out.append(c[i])
+            i += 1
+        }
+        return out
     }
 
     /// %0-%9, %VAR%, %% -> %. A lone % just vanishes, exactly like the real thing.
