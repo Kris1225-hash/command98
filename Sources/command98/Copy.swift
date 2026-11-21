@@ -27,7 +27,7 @@ enum CopyDest {
 extension Shell {
     /// COPY CON: type until ^Z (or ^D, for the mac people), like 1985.
     func readCon(_ c: Ctx) -> Data? {
-        if c.io.inFD == 0 && Console.isTTY {
+        if c.io.inFD == 0 {  // piped too: share the shell's line buffer instead of racing it
             var text = ""
             while true {
                 switch Console.readLine(template: "") {

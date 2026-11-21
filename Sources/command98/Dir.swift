@@ -196,9 +196,9 @@ extension Shell {
     func volumeLabel(_ l: Character) -> String {
         let d = drives.table[l]!
         if let set = Attr.label(d.root.path) { return set }
-        let name = d.root.path == "/"
-            ? ((try? d.root.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "")
-            : d.root.lastPathComponent
+        // a mounted folder is an unlabeled volume until LABEL says otherwise
+        guard d.root.path == "/" else { return "" }
+        let name = (try? d.root.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? ""
         return String(name.uppercased().prefix(11))
     }
 
