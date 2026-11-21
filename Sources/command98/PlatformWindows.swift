@@ -56,6 +56,8 @@ enum Platform {
         SetConsoleCtrlHandler(ctrlHandler, true)
         SetConsoleOutputCP(UINT(CP_UTF8))
         SetConsoleCP(UINT(CP_UTF8))
+        // text-mode stdin stops dead at ^Z; the shell wants to see it (COPY CON, end of input)
+        if !isTTY(0) { _ = _setmode(0, _O_BINARY) }
         let out = GetStdHandle(STD_OUTPUT_HANDLE)
         var mode: DWORD = 0
         if GetConsoleMode(out, &mode) {
