@@ -52,9 +52,10 @@ struct KeyByteStream {
 struct KeyDecoder {
     private let stream: KeyByteStream
     private let timeoutMS: Int32
-    /// A byte read from the stream that belongs to the next key, e.g. the space after
-    /// a bare Esc.
-    private var saved: Int?
+    /// Bytes read from the stream that belong to the next key: the space after a bare
+    /// Esc, or the whole truncated CSI/SS3 body after one. A FIFO so nothing read while
+    /// decoding is ever lost.
+    private var held: [Int] = []
 
     init(stream: KeyByteStream, timeoutMS: Int32 = 30) {
         self.stream = stream
@@ -62,19 +63,18 @@ struct KeyDecoder {
     }
 
     /// True while there is another key to read (a held-back byte counts).
-    var hasMore: Bool { saved != nil || stream.hasMore() }
+    var hasMore: Bool { !held.isEmpty || stream.hasMore() }
 
     /// True when a byte from a previous read is waiting to be decoded.
-    var hasHeldByte: Bool { saved != nil }
+    var hasHeldByte: Bool { !held.isEmpty }
 
     /// One keypress, including any byte a previous read held back.
     mutating func readKey() -> Key {
         let first: Int
-        if let s = saved {
-            saved = nil
-            first = s
-        } else {
+        if held.isEmpty {
             first = stream.read()
+        } else {
+            first = held.removeFirst()
         }
         if first != 27 { return KeyReader.decode(first) ?? .unknown }
         return readEscape()
@@ -90,9 +90,9 @@ struct KeyDecoder {
         case 0x5B: // '['
             var sequence: [UInt8] = [0x5B]
             while sequence.count < KeyReader.maxSequenceLength {
-                guard let b = continuation() else { return hold(0x5B) }
+                guard let b = continuation() else { return holdBack(sequence) }
                 if b == -2 { return .interrupt }
-                guard b >= 0 else { return hold(0x5B) }
+                guard b >= 0 else { return holdBack(sequence) }
                 sequence.append(UInt8(truncatingIfNeeded: b))
                 // Parameter and intermediate bytes (0x20...0x3F) come before the
                 // final byte (0x40...0x7E); the introducer itself is not a final.
@@ -102,12 +102,12 @@ struct KeyDecoder {
             // decoded normally by the next read.
             return .unknown
         case 0x4F: // 'O'
-            guard let b = continuation() else { return hold(0x4F) }
+            guard let b = continuation() else { return holdBack([0x4F]) }
             if b == -2 { return .interrupt }
-            guard b >= 0 else { return hold(0x4F) }
+            guard b >= 0 else { return holdBack([0x4F]) }
             return KeyReader.decodeSequence([0x4F, UInt8(truncatingIfNeeded: b)])
         default:
-            if introducer >= 0 { saved = introducer }
+            if introducer >= 0 { held.append(introducer) }
             return .escape
         }
     }
@@ -118,9 +118,12 @@ struct KeyDecoder {
         return stream.read()
     }
 
-    /// Keeps `byte` for the next read and reports the Esc that preceded it.
-    private mutating func hold(_ byte: Int) -> Key {
-        saved = byte
+    /// Requeues the bytes already consumed from a sequence that ended by timeout or
+    /// EOF, so the next read replays them instead of losing them, and reports the Esc
+    /// that started it. Bounded by `maxSequenceLength` because callers never hand over
+    /// more than one truncated sequence body.
+    private mutating func holdBack(_ bytes: [UInt8]) -> Key {
+        held.append(contentsOf: bytes.map(Int.init))
         return .escape
     }
 }

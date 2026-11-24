@@ -69,6 +69,23 @@ final class KeyTests: XCTestCase {
         XCTAssertEqual(KeyReader.decodeAll([27, 32, 66]), [.escape, .char(" "), .char("B")])
     }
 
+    func testTruncatedSequenceReplaysEveryConsumedByte() {
+        // A CSI that times out before its final byte must give back the whole body,
+        // not just the introducer: the '1' used to vanish.
+        XCTAssertEqual(KeyReader.decodeAll([27, 91, 49]), [.escape, .char("["), .char("1")])
+        XCTAssertEqual(KeyReader.decodeAll([27, 91, 49, 59]), [.escape, .char("["), .char("1"), .char(";")])
+
+        var decoder = KeyDecoder(stream: .seeded([27, 91, 49]))
+        XCTAssertEqual(decoder.readKey(), .escape)
+        XCTAssertTrue(decoder.hasHeldByte)
+        XCTAssertTrue(decoder.hasMore)
+        XCTAssertEqual(decoder.readKey(), .char("["))
+        XCTAssertTrue(decoder.hasHeldByte)
+        XCTAssertEqual(decoder.readKey(), .char("1"))
+        XCTAssertFalse(decoder.hasHeldByte)
+        XCTAssertFalse(decoder.hasMore)
+    }
+
     func testOverlongSequenceIsBounded() {
         var bytes = [27, 91]
         bytes += Array(repeating: 49, count: 40) // '1' x 40, so no final byte in range
@@ -143,6 +160,29 @@ final class KeyTests: XCTestCase {
         // descriptor is now empty, so polling it alone would strand the key.
         XCTAssertTrue(KeyReader.hasBufferedKey(fd: fds[0]))
         XCTAssertEqual(KeyReader.read(fd: fds[0]), .char(" "))
+        XCTAssertFalse(KeyReader.hasBufferedKey(fd: fds[0]))
+    }
+
+    func testPipeTruncatedSequenceKeepsHeldBytesVisible() throws {
+        KeyReader.resetDecoders()
+        var fds: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&fds), 0)
+        defer {
+            close(fds[0]); close(fds[1])
+            KeyReader.resetDecoders()
+        }
+        let bytes: [UInt8] = [0x1B, 0x5B, 0x31]
+        let written = bytes.withUnsafeBytes { write(fds[1], $0.baseAddress, $0.count) }
+        XCTAssertEqual(written, bytes.count)
+        // The writer stays open: only the continuation timeout can end the CSI, and
+        // an open-but-empty descriptor leaves hasBufferedKey to the held bytes.
+        XCTAssertEqual(KeyReader.read(fd: fds[0]), .escape)
+        // Both '[' and '1' were read while looking for a final byte; polling the
+        // kernel descriptor alone would strand them.
+        XCTAssertTrue(KeyReader.hasBufferedKey(fd: fds[0]))
+        XCTAssertEqual(KeyReader.read(fd: fds[0]), .char("["))
+        XCTAssertTrue(KeyReader.hasBufferedKey(fd: fds[0]))
+        XCTAssertEqual(KeyReader.read(fd: fds[0]), .char("1"))
         XCTAssertFalse(KeyReader.hasBufferedKey(fd: fds[0]))
     }
 

@@ -81,14 +81,30 @@ enum QBasic {
 /// The plain /RUN console. Full-screen programs get a different implementation from the IDE.
 private final class QBasicConsoleIO: QBasicIO {
     let io: IO
+    /// Screen control only belongs on a real terminal. `QBASIC /RUN PROG.BAS > LOG.TXT` still
+    /// prints to the log, but escape sequences there are garbage; stdin may well be a terminal
+    /// in that case, so only the output end is considered.
+    private let paintsScreen: Bool
 
-    init(_ io: IO) { self.io = io }
+    init(_ io: IO) {
+        self.io = io
+        paintsScreen = Console.isFullScreen(io.out, inputIsTTY: true)
+    }
 
     func write(_ s: String) { io.out.write(s) }
-    func cls() { io.out.control("\u{1B}[2J\u{1B}[H") }
-    func locate(_ row: Int, _ col: Int) { io.out.control("\u{1B}[\(row);\(col)H") }
+
+    func cls() {
+        guard paintsScreen else { return }
+        io.out.control("\u{1B}[2J\u{1B}[H")
+    }
+
+    func locate(_ row: Int, _ col: Int) {
+        guard paintsScreen else { return }
+        io.out.control("\u{1B}[\(row);\(col)H")
+    }
 
     func color(_ fg: Int, _ bg: Int) {
+        guard paintsScreen else { return }
         // DOS and ANSI number the six non-gray colours differently.
         let ansi = [0, 4, 2, 6, 1, 5, 3, 7]
         let fore = ansi[fg & 7] + 30 + (fg >= 8 ? 60 : 0)
