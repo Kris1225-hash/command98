@@ -1,6 +1,8 @@
 import Foundation
 
-
+/// Program entry point, kept in the library target so the test target can link the module.
+/// The thin executable target in Sources/command98CLI calls this.
+public func command98Main() {
 installSignalHandlers()
 
 let fm = FileManager.default
@@ -19,7 +21,7 @@ func usage() {
       /Y           Step through batch files line by line.
       --real       C:\\ is the real root (/). The sandbox moves to S:.
       --sandbox    C:\\ is the sandbox folder (the default).
-      --mount X=p  Mount a mac folder as drive X:.
+      --mount X=p  Mount a Linux folder as drive X:.
 
     Config lives in ~/.command98.ini.
 
@@ -62,7 +64,7 @@ if let text = try? String(contentsOfFile: cfgPath, encoding: .utf8) {
 
 // MARK: arguments
 
-var argv = Array(CommandLine.arguments.dropFirst())
+let argv = Array(CommandLine.arguments.dropFirst())
 var runC: String? = nil
 var runK: String? = nil
 var permanent = false
@@ -128,7 +130,7 @@ for (l, p) in extraMounts {
     if fm.fileExists(atPath: path) { drives.mount(l, path, sandbox: false) }
 }
 
-// in real mode, start where the mac shell was
+// in real mode, start where the Linux shell was
 if real, let (l, comps) = drives.hostToDos(URL(fileURLWithPath: fm.currentDirectoryPath).resolvingSymlinksInPath().path) {
     drives.current = l
     drives.table[l]!.cwd = comps
@@ -141,6 +143,7 @@ Shell.installStubs(root: URL(fileURLWithPath: sandboxRoot))
 let shell = Shell(drives: drives)
 shell.permanent = permanent
 shell.stepMode = step
+shell.config = ConfigSys.apply(shell)
 
 // the Win98 defaults: C:\WINDOWS and C:\WINDOWS\COMMAND first in PATH, COMSPEC at the root
 if let (sl, _) = drives.hostToDos(URL(fileURLWithPath: sandboxRoot).resolvingSymlinksInPath().path) {
@@ -148,6 +151,11 @@ if let (sl, _) = drives.hostToDos(URL(fileURLWithPath: sandboxRoot).resolvingSym
     shell.envSet("PATH", "\(sl):\\WINDOWS;\(sl):\\WINDOWS\\COMMAND" + (hostDirs.isEmpty ? "" : ";" + hostDirs))
     shell.envSet("COMSPEC", "\(sl):\\COMMAND.COM")
     shell.envSet("WINDIR", "\(sl):\\WINDOWS")
+}
+
+// the boot splash belongs to an interactive start, not to /C
+if runC == nil {
+    Boot.run(shell)
 }
 
 if let c = runC {
@@ -168,3 +176,5 @@ if let k = runK { shell.runLine(k) }
 
 shell.interactive()
 exit(shell.errorLevel)
+
+}

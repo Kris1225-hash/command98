@@ -70,7 +70,7 @@ extension Shell {
     /// The real REM handler is the "back to the prompt" routine at transient 0x0104. Same energy.
     func cmdRem(_ c: Ctx) {}
 
-    func cmdCls(_ c: Ctx) { c.out.write("\u{1B}[2J\u{1B}[H") }
+    func cmdCls(_ c: Ctx) { c.out.control("\u{1B}[2J\u{1B}[H") }
 
     func cmdVer(_ c: Ctx) {
         c.out.line()
@@ -324,7 +324,7 @@ extension Shell {
             c.out.line("Attempt to remove current directory - \(a)")
             return
         }
-        // Finder litters .DS_Store everywhere; a directory holding only that counts as empty
+        // file managers litter .DS_Store; a directory holding only that counts as empty
         let contents = drives.entries(u)
         guard contents.allSatisfy({ $0 == ".DS_Store" }) else {
             c.out.line(bad)
