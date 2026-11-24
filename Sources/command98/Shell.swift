@@ -158,14 +158,16 @@ struct Ctx {
 final class BatchContext {
     let dosName: String
     let lines: [String]
+    let io: IO
     var pc = 0
     var params: [String]
     var shift = 0
 
-    init(dosName: String, lines: [String], params: [String]) {
+    init(dosName: String, lines: [String], params: [String], io: IO) {
         self.dosName = dosName
         self.lines = lines
         self.params = params
+        self.io = io
     }
     func param(_ n: Int) -> String {
         let i = n + shift
@@ -629,7 +631,7 @@ final class Shell {
         var text = String(decoding: data, as: UTF8.self)
         if let z = text.firstIndex(of: "\u{1A}") { text = String(text[..<z]) } // ^Z is end of file
         let lines = text.components(separatedBy: "\n").map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
-        let ctx = BatchContext(dosName: dosName, lines: lines, params: params)
+        let ctx = BatchContext(dosName: dosName, lines: lines, params: params, io: io)
 
         // running a batch file from a batch file without CALL replaces it (no return)
         if !call && !batch.isEmpty {
@@ -669,27 +671,62 @@ final class Shell {
             let shown = silent ? String(line.dropFirst()) : line
             guard Console.ask("\(shown) [Enter=Y,Esc=N]?", "YN\r\u{1B}").map({ $0 == "Y" || $0 == "\r" }) == true else { return }
         }
-        runLine(line)
+        runLine(line, io: ctx.io)
     }
 
-    /// Typed at the prompt, DOS 7 expands %VAR% too, but only names that exist: anything
-    /// else (FOR's %f, %1, a stray %) stays literal, so `for %f in (*) do echo %f` still works.
+    // Prompt vs batch: a `%` with no partner stays literal at the prompt, while batch eats it.
+    /// Typed at the prompt, DOS 7 still substitutes `%VAR%` (an undefined name becomes empty)
+    /// and turns `%%` into `%`; only an unpaired `%` stays literal. That keeps `echo 100%`
+    /// and `%1` intact, and the FOR pre-scan lets `for %f in (*) do echo %f` survive.
     func expandTyped(_ s: String) -> String {
         guard s.contains("%") else { return s }
+        let forVar = typedForVar(s)
         var out = ""
         let c = Array(s)
         var i = 0
         while i < c.count {
-            if c[i] == "%", let j = c[(i + 1)...].firstIndex(of: "%"), j > i + 1,
-               let v = envGet(String(c[(i + 1)..<j])) {
-                out += v
+            guard c[i] == "%" else {
+                out.append(c[i])
+                i += 1
+                continue
+            }
+            if i + 1 < c.count, c[i + 1] == "%" {
+                out.append("%")
+                i += 2
+                continue
+            }
+            if i + 1 < c.count, c[i + 1] >= "0", c[i + 1] <= "9" {
+                out.append("%")
+                out.append(c[i + 1])
+                i += 2
+                continue
+            }
+            if let j = c[(i + 1)...].firstIndex(of: "%") {
+                if let v = envGet(String(c[(i + 1)..<j])) {
+                    out += v
+                } else if let fv = forVar, i + 1 < c.count, c[i + 1] == fv {
+                    out.append("%")
+                    out.append(fv)
+                    i += 2
+                    continue
+                }
                 i = j + 1
                 continue
             }
-            out.append(c[i])
+            out.append("%")
             i += 1
         }
         return out
+    }
+
+    /// The character of a prompt-time `FOR %x ...`; COMMAND.COM protects it from expansion.
+    private func typedForVar(_ s: String) -> Character? {
+        let c = Array(s.drop(while: { $0 == " " || $0 == "\t" }))
+        guard c.count > 4, String(c[0..<3]).uppercased() == "FOR", c[3] == " " || c[3] == "\t" else { return nil }
+        var i = 4
+        while i < c.count, c[i] == " " || c[i] == "\t" { i += 1 }
+        guard i + 1 < c.count, c[i] == "%", c[i + 1] != "%", c[i + 1] != " ", c[i + 1] != "\t" else { return nil }
+        return c[i + 1]
     }
 
     /// %0-%9, %VAR%, %% -> %. A lone % just vanishes, exactly like the real thing.

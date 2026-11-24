@@ -55,7 +55,7 @@ The external commands live where Win98 kept them, as stub files on the sandbox d
 ## Faithful quirks, on purpose
 
 - `ECHO OFF` at the prompt hides the prompt.
-- `echo 50% off` prints `50 off`.
+- `echo 50% off` prints `50% off` at the prompt; in a batch file the lone `%` is eaten, so it prints `50 off`.
 - `IF EXIST` is false for directories, so use `IF EXIST DIR\NUL`.
 - `FOR` hands out 8.3 names unless you run `LFNFOR ON`.
 - `CHCP 850` says `NLSFUNC not installed`.
