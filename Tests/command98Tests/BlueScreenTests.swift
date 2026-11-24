@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import command98
 
 final class BlueScreenTests: XCTestCase {
@@ -93,5 +94,43 @@ final class BlueScreenTests: XCTestCase {
     func testHiddenBsodCommandIsRegistered() {
         XCTAssertNotNil(BlueScreen.commands["BSOD"])
         XCTAssertNotNil(BlueScreen.help["BSOD"])
+    }
+
+    // MARK: redirected output
+
+    func testRedirectedShowWritesPlainTextWithoutEscapesOrAKeyWait() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("command98-bsod-\(UUID().uuidString)").path
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        BlueScreen.show(Out(fd), reason: "WIN.COM")
+        close(fd)
+        defer { unlink(path) }
+
+        let shown = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        XCTAssertFalse(shown.contains("\u{1B}"), "a redirected page must not carry escape codes")
+        XCTAssertTrue(shown.contains("*** STOP: 0xC0DE0001"))
+        XCTAssertTrue(shown.contains("The file WIN.COM could not be loaded from C:\\WINDOWS."))
+        XCTAssertTrue(shown.contains("COMMAND98"))
+        XCTAssertFalse(shown.contains(BlueScreen.pressKeyText),
+                       "a redirected page never waits for a key, so it must not ask")
+    }
+
+    func testFullScreenGateNeedsBothEndsToBeTerminals() {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("command98-gate-\(UUID().uuidString)").path
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd); unlink(path) }
+
+        // A file descriptor is never a terminal, even if it happens to be fd 1.
+        XCTAssertFalse(Console.isFullScreen(Out(fd), inputIsTTY: true))
+
+        var master: Int32 = -1
+        var slave: Int32 = -1
+        XCTAssertEqual(openpty(&master, &slave, nil, nil, nil), 0)
+        defer { close(master); close(slave) }
+        XCTAssertFalse(Console.isFullScreen(Out(slave), inputIsTTY: false))
+        XCTAssertTrue(Console.isFullScreen(Out(slave), inputIsTTY: true))
     }
 }
