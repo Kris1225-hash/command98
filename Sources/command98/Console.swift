@@ -28,7 +28,14 @@ final class Out {
         }
     }
 
-    func write(_ s: String) { raw(Array(s.utf8)) }
+    func write(_ s: String) {
+        let encoded = AnsiSys.encode(s, fd: fd)
+        raw(Array(encoded.utf8))
+    }
+
+    /// Shell-owned escape sequences (clear screen, full-screen tools). ANSI.SYS is not
+    /// involved: these are the console driver's own control codes.
+    func control(_ s: String) { raw(Array(s.utf8)) }
     func line(_ s: String = "") { write(s + "\n") }
 }
 
@@ -75,8 +82,10 @@ enum Console {
         }
     }
 
-    static func pending(_ ms: Int32) -> Bool {
-        var p = pollfd(fd: 0, events: Int16(POLLIN), revents: 0)
+    static func pending(_ ms: Int32) -> Bool { pending(0, ms) }
+
+    static func pending(_ fd: Int32, _ ms: Int32) -> Bool {
+        var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         return poll(&p, 1, ms) > 0
     }
 

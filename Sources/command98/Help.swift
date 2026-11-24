@@ -5,7 +5,7 @@ extension Shell {
 
     static func helpText(_ name: String) -> String {
         let key = aliases[name] ?? name
-        return (help[key] ?? utilHelp[key] ?? "No help for \(name).") + "\n"
+        return (help[key] ?? featureHelp[key] ?? coreUtilHelp[key] ?? "No help for \(name).") + "\n"
     }
 
     // all wording here is our own; the switch letters match the original
@@ -237,7 +237,7 @@ extension Shell {
     ]
 
     // the \\WINDOWS\\COMMAND utilities. wording is ours, switches match the 1999 originals
-    static let utilHelp: [String: String] = [
+    static let coreUtilHelp: [String: String] = [
         "ATTRIB": """
         Shows or changes file attributes.
 
@@ -370,7 +370,7 @@ extension Shell {
           /Y   Overwrite without asking.      /-Y  Ask first.
         """,
         "NLSFUNC": "Loads national language support, which is what CHCP was waiting for.",
-        "SCANDISK": "Checked FAT disks. For APFS, use First Aid in Disk Utility.",
+        "SCANDISK": "Checked FAT disks. On Linux, use fsck to fix a disk.",
         "SETVER": "Told old programs a different DOS version. Nobody asks anymore.",
         "SMARTDRV": "Was a disk cache. \(Platform.name) is one now.",
         "SORT": """

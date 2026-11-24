@@ -56,6 +56,10 @@ enum Platform {
         cWrite(fd, p, n)
     }
 
+    /// Whether the descriptor is a terminal. Kept here so full-screen tools do not need
+    /// a libc import just to ask.
+    static func isTTY(_ fd: Int32) -> Bool { isatty(fd) == 1 }
+
     static func termSize(_ fd: Int32 = 1) -> (rows: Int, cols: Int)? {
         var w = winsize()
         #if os(Linux)

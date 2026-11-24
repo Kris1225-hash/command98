@@ -1,8 +1,8 @@
 import Foundation
 
 
-/// Extra DOS attributes that macOS has no flag for (system, cleared archive) and volume
-/// labels live in extended attributes, so they survive across sessions.
+/// Extra DOS attributes the host may have no flag for (system, cleared archive, hidden on
+/// Linux) and volume labels live in extended attributes, so they survive across sessions.
 enum Attr {
     static let key = "com.command98.attr"
     static let labelKey = "com.command98.label"
@@ -34,7 +34,7 @@ var gKeyb = "US"
 extension Shell {
     // MARK: stubs and dispatch
 
-    static let utilities: [String: (Shell) -> (Ctx) -> Void] = [
+    static let coreUtilities: [String: (Shell) -> (Ctx) -> Void] = [
         "ATTRIB": Shell.uAttrib, "CHKDSK": Shell.uChkdsk, "CHOICE": Shell.uChoice, "DELTREE": Shell.uDeltree,
         "DISKCOPY": Shell.uDiskcopy, "DOSKEY": Shell.uDoskey, "EDIT": Shell.uEdit, "FC": Shell.uFc,
         "FDISK": Shell.uFdisk, "FIND": Shell.uFind, "FORMAT": Shell.uFormat, "KEYB": Shell.uKeyb,
@@ -46,7 +46,7 @@ extension Shell {
     ]
 
     /// (folder under the drive root, file name, size of the real Win98 SE file in bytes)
-    static let stubFiles: [(String, String, Int)] = [
+    static let coreStubFiles: [(String, String, Int)] = [
         ("", "COMMAND.COM", 93890),
         ("WINDOWS", "COMMAND.COM", 93890), ("WINDOWS", "WIN.COM", 24791), ("WINDOWS", "SETVER.EXE", 18939),
         ("WINDOWS", "EMM386.EXE", 125495), ("WINDOWS", "SMARTDRV.EXE", 45379),
@@ -64,14 +64,13 @@ extension Shell {
         ("WINDOWS\\COMMAND", "SYS.COM", 18967), ("WINDOWS\\COMMAND", "XCOPY.EXE", 3878),
         ("WINDOWS\\COMMAND", "XCOPY32.EXE", 3878), ("WINDOWS\\COMMAND", Platform.hostUtility + ".COM", 2026),
     ]
-    static let stubVersion = "1"
 
     /// A stub starts with "C98U NAME". Rename it and it still runs NAME, like renaming a real .EXE.
     static func stubName(_ d: Data) -> String? {
         let b = [UInt8](d)
         guard b.count > 6, b.starts(with: Array("C98U ".utf8)) else { return nil }
         let name = String(decoding: b[5...].prefix { $0 > 32 }, as: UTF8.self)
-        return utilities[name] != nil ? name : nil
+        return Shell.utilities[name] != nil ? name : nil
     }
 
     /// Lays down \COMMAND.COM, \WINDOWS and \WINDOWS\COMMAND on the sandbox drive. Only on a fresh
@@ -80,11 +79,11 @@ extension Shell {
         let fm = FileManager.default
         let cmdDir = root.appendingPathComponent("WINDOWS/COMMAND")
         let markerKey = "com.command98.stubs"
-        if Attr.read(cmdDir.path, markerKey) == stubVersion { return }
+        if Attr.read(cmdDir.path, markerKey) == Shell.stubVersion { return }
         var dc = DateComponents()
         (dc.year, dc.month, dc.day, dc.hour, dc.minute) = (1999, 4, 23, 22, 22)
         let stamp = Calendar.current.date(from: dc) ?? Date()
-        for (folder, file, size) in stubFiles {
+        for (folder, file, size) in Shell.stubFiles {
             let dir = folder.split(separator: "\\").reduce(root) { $0.appendingPathComponent(String($1)) }
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
             let u = dir.appendingPathComponent(file)
@@ -98,7 +97,7 @@ extension Shell {
             _ = fm.createFile(atPath: u.path, contents: data)
             try? fm.setAttributes([.modificationDate: stamp], ofItemAtPath: u.path)
         }
-        Attr.write(cmdDir.path, markerKey, stubVersion)
+        Attr.write(cmdDir.path, markerKey, Shell.stubVersion)
     }
 
     func runUtility(_ name: String, _ rest: String, _ io: IO) {
@@ -431,7 +430,7 @@ extension Shell {
             return
         }
         c.out.line()
-        c.out.line("No. Formatting disks is Disk Utility's job, and it asks more questions first.")
+        c.out.line("No. Formatting disks is GParted's job, and it asks more questions first.")
         errorLevel = 4
     }
 
@@ -451,7 +450,7 @@ extension Shell {
     }
 
     func uScandisk(_ c: Ctx) {
-        c.out.line("ScanDisk only knows FAT. For APFS, use First Aid in Disk Utility.")
+        c.out.line("ScanDisk only knows FAT. On Linux, use fsck to fix a disk.")
         errorLevel = 1
     }
 
@@ -471,8 +470,8 @@ extension Shell {
         #endif
     }
 
-    /// MAC command [args]: run a macOS program straight from the host PATH, skipping the DOS
-    /// search order (so `MAC find . -name x` gets the Unix find, not FIND.EXE).
+    /// LINUX command [args] (also MAC): run a Linux program straight from the host PATH,
+    /// skipping the DOS search order (so `LINUX find . -name x` gets the Unix find, not FIND.EXE).
     func uMac(_ c: Ctx) {
         let w = Tok.posix(c.tail)
         guard let prog = w.first else {

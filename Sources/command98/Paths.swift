@@ -164,7 +164,7 @@ struct Resolved {
     }
 }
 
-/// Maps DOS drive letters onto macOS directories and resolves DOS paths
+/// Maps DOS drive letters onto Linux directories and resolves DOS paths
 /// (case-insensitive, long or short names, `..` and Win9x `...`).
 final class Drives {
     var table: [Character: Drive] = [:]
