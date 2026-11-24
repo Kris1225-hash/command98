@@ -11,6 +11,8 @@ final class RecordingIO: QBasicIO {
     private(set) var sleeps: [Int] = []
     var inputQueue: [String]
     var keyQueue: [Key]
+    var onWrite: ((String) -> Void)?
+    var onSleep: ((Int) -> Void)?
 
     init(inputs: [String] = [], keys: [Key] = []) {
         inputQueue = inputs
@@ -20,6 +22,7 @@ final class RecordingIO: QBasicIO {
     func write(_ s: String) {
         writes.append(s)
         output += s
+        onWrite?(s)
     }
 
     func cls() { clearCount += 1 }
@@ -32,7 +35,10 @@ final class RecordingIO: QBasicIO {
         return inputQueue.removeFirst()
     }
 
-    func sleep(_ ms: Int) { sleeps.append(ms) }
+    func sleep(_ ms: Int) {
+        sleeps.append(ms)
+        onSleep?(ms)
+    }
     func key() -> Key? { keyQueue.isEmpty ? nil : keyQueue.removeFirst() }
 }
 
@@ -234,8 +240,96 @@ final class QBasicInterpreterTests: XCTestCase {
         XCTAssertEqual(io.clearCount, 1)
         XCTAssertEqual(io.colors.map { [$0.0, $0.1] }, [[14, 1]])
         XCTAssertEqual(io.locations.map { [$0.0, $0.1] }, [[4, 9]])
-        XCTAssertEqual(io.sleeps, [1250])
+        XCTAssertEqual(io.sleeps, Array(repeating: 40, count: 31) + [10])
         XCTAssertEqual(io.output, "here\n")
+    }
+
+    func testInterruptStopsLoopsAndClearsFlag() {
+        let cases = [
+            ("10 PRINT \"tick\": GOTO 10", 10),
+            ("10 FOR I = 1 TO 2 STEP 0: PRINT \"tick\": NEXT I", 10),
+            ("10 WHILE 1: PRINT \"tick\": WEND", 10),
+            ("10 GOSUB 20\n20 PRINT \"tick\": GOTO 10", 20),
+        ]
+        for (source, line) in cases {
+            let io = RecordingIO()
+            gInterrupted = 0
+            io.onWrite = { _ in
+                gInterrupted = 1
+                io.onWrite = nil
+            }
+            let status = QBasic.run(source: source, io: io)
+            XCTAssertEqual(status, 2, source)
+            XCTAssertEqual(gInterrupted, 0, source)
+            XCTAssertEqual(io.output, "tick\nBreak in line \(line)\n", source)
+        }
+    }
+
+    func testInterruptStopsLongSleepAfterFirstChunk() {
+        let io = RecordingIO()
+        gInterrupted = 0
+        io.onSleep = { _ in gInterrupted = 1 }
+        let status = QBasic.run(source: "10 SLEEP 60", io: io)
+        XCTAssertEqual(status, 2)
+        XCTAssertEqual(gInterrupted, 0)
+        XCTAssertEqual(io.sleeps, [40])
+        XCTAssertEqual(io.output, "Break in line 10\n")
+    }
+
+    func testExpressionAndStatementComplexityFailWithoutCrashing() {
+        let nested = "10 PRINT " + String(repeating: "(", count: 5_000) + "1"
+            + String(repeating: ")", count: 5_000)
+        let additions = "10 PRINT 1" + String(repeating: " + 1", count: 49_999)
+        let evaluatorDepth = "10 PRINT 1" + String(repeating: " + 1", count: 128)
+        for source in [nested, additions, evaluatorDepth] {
+            let (status, io) = run(source)
+            XCTAssertEqual(status, 1)
+            XCTAssertEqual(io.output, "Expression too complex in line 10\n")
+        }
+
+        let statements = String(repeating: "IF 1 THEN ", count: 1_000) + "PRINT \"unreachable\""
+        let (status, io) = run(statements)
+        XCTAssertEqual(status, 1)
+        XCTAssertEqual(io.output, "Program too complex in line 1\n")
+    }
+
+    func testStackAndTotalArrayLimits() {
+        var result = run("10 GOSUB 10")
+        XCTAssertEqual(result.0, 1)
+        XCTAssertEqual(result.1.output, "GOSUB stack overflow in line 10\n")
+
+        result = run("10 FOR I = 1 TO 2\n20 GOTO 10\n30 NEXT I")
+        XCTAssertEqual(result.0, 1)
+        XCTAssertEqual(result.1.output, "FOR stack overflow in line 10\n")
+
+        result = run("10 DIM A(65535, 65535)")
+        XCTAssertEqual(result.0, 1)
+        XCTAssertEqual(result.1.output, "Out of memory in line 10\n")
+
+        result = run("10 DIM A(999, 499), B(999, 499), C(1)")
+        XCTAssertEqual(result.0, 1)
+        XCTAssertEqual(result.1.output, "Out of memory in line 10\n")
+    }
+
+    func testInlineGosubReturnsToFollowingStatement() {
+        let (status, io) = run("""
+        10 X = 1
+        20 IF X = 1 THEN GOSUB 100: PRINT "after"
+        30 PRINT "rest"
+        40 END
+        100 PRINT "sub": RETURN
+        """)
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(io.output, "sub\nafter\nrest\n")
+    }
+
+    func testExponentLiteralsAndValAcceptLowercaseAndExplicitPlus() {
+        let (status, io) = run("""
+        PRINT 1e3; 1E+3; 1E3; 1e+3; 1E-3
+        PRINT VAL("1e3"); VAL("1E+3"); VAL("1E3"); VAL("1e+3"); VAL("1E-3")
+        """)
+        XCTAssertEqual(status, 0)
+        XCTAssertEqual(io.output, " 1000  1000  1000  1000  0.001 \n 1000  1000  1000  1000  0.001 \n")
     }
 
     func testRandomizeIsRepeatableAndRndZeroRepeats() {

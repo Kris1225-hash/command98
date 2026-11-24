@@ -14,13 +14,13 @@ final class QBasicArray {
     let bounds: [Int]
     var values: [QBasicValue]
 
-    init(name: String, bounds: [Int]) throws {
+    init(name: String, bounds: [Int], limit: Int = 1_000_000) throws {
         guard bounds.count == 1 || bounds.count == 2 else { throw QBasicProblem("Subscript out of range") }
         var count = 1
         for bound in bounds {
             guard bound >= 0, bound <= 65_535 else { throw QBasicProblem("Subscript out of range") }
             let dimension = bound + 1
-            guard count <= 1_000_000 / dimension else { throw QBasicProblem("Out of memory") }
+            guard count <= limit / dimension else { throw QBasicProblem("Out of memory") }
             count *= dimension
         }
         self.bounds = bounds
@@ -40,7 +40,26 @@ final class QBasicArray {
 private enum QBasicFlow {
     case next
     case jump(Int)
+    case call(Int)
+    case `return`
+    case inline([QBasicStatement])
     case stop
+}
+
+struct QBasicInterrupt: Error {
+    let line: Int
+}
+
+private struct QBasicInlineFrame {
+    let statements: [QBasicStatement]
+    var index: Int
+    let pc: Int
+    let next: Int
+}
+
+private struct QBasicReturnLocation {
+    let pc: Int
+    let inline: [QBasicInlineFrame]
 }
 
 private struct QBasicForFrame {
@@ -55,8 +74,10 @@ final class QBasicInterpreter {
     private let io: QBasicIO
     private var variables: [String: QBasicValue] = [:]
     private var arrays: [String: QBasicArray] = [:]
-    private var gosubs: [Int] = []
+    private var arrayElementCount = 0
+    private var gosubs: [QBasicReturnLocation] = []
     private var forFrames: [QBasicForFrame] = []
+    private var evaluationDepth = 0
     private var dataPosition = 0
     private var randomState: UInt32 = 1
     private var lastRandom = 0.0
@@ -69,21 +90,60 @@ final class QBasicInterpreter {
 
     func execute() throws {
         var pc = 0
+        var inline: [QBasicInlineFrame] = []
         while pc >= 0 && pc < program.statements.count {
-            let statement = program.statements[pc]
+            let statement: QBasicStatement
+            let statementPC: Int
+            let statementNext: Int
+            let sourceLine: Int
+            var continuationPC = pc + 1
+            if let frame = inline.last {
+                statement = frame.statements[frame.index]
+                statementPC = frame.pc
+                statementNext = frame.next
+                sourceLine = program.statements[frame.pc].line
+                continuationPC = pc
+                inline[inline.count - 1].index += 1
+                while let last = inline.last, last.index >= last.statements.count {
+                    inline.removeLast()
+                }
+                if inline.isEmpty { continuationPC = statementNext }
+            } else {
+                statement = program.statements[pc]
+                statementPC = pc
+                statementNext = pc + 1
+                sourceLine = statement.line
+            }
             do {
-                switch try execute(statement, pc: pc, next: pc + 1) {
-                case .next: pc += 1
-                case .jump(let destination): pc = destination
-                case .stop: return
+                switch try execute(statement, pc: statementPC, line: sourceLine) {
+                case .next:
+                    pc = continuationPC
+                case .jump(let destination):
+                    pc = destination
+                    inline = []
+                case .call(let destination):
+                    guard gosubs.count < 256 else { throw QBasicProblem("GOSUB stack overflow") }
+                    gosubs.append(QBasicReturnLocation(pc: continuationPC, inline: inline))
+                    pc = destination
+                    inline = []
+                case .return:
+                    guard let returning = gosubs.popLast() else { throw QBasicProblem("RETURN without GOSUB") }
+                    pc = returning.pc
+                    inline = returning.inline
+                case .inline(let statements):
+                    pc = statementPC
+                    inline.append(QBasicInlineFrame(statements: statements, index: 0, pc: statementPC, next: statementNext))
+                case .stop:
+                    return
                 }
             } catch let problem as QBasicProblem {
-                throw problem.atLine(statement.line)
+                throw problem.atLine(sourceLine)
             }
         }
     }
 
-    private func execute(_ statement: QBasicStatement, pc: Int, next: Int) throws -> QBasicFlow {
+    private func execute(_ statement: QBasicStatement, pc: Int, line: Int) throws -> QBasicFlow {
+        try checkInterrupted(line: line)
         switch statement.kind {
         case .print(let items):
             try printItems(items)
@@ -112,7 +172,7 @@ final class QBasicInterpreter {
                 guard seconds.isFinite, seconds >= 0, seconds <= 86_400 else { throw QBasicProblem("Illegal function call") }
                 milliseconds = Int((seconds * 1000).rounded())
             }
-            io.sleep(milliseconds)
+            try sleep(milliseconds, line: line)
         case .end, .stop:
             return .stop
         case .randomize(let expression):
@@ -125,11 +185,8 @@ final class QBasicInterpreter {
             }
             _ = nextRandom()
         case .ifSingle(let condition, let yes, let no):
-            if try truth(try evaluate(condition)) {
-                if let flow = try executeInline(yes, pc: pc, next: next) { return flow }
-            } else {
-                if let flow = try executeInline(no, pc: pc, next: next) { return flow }
-            }
+            let branch = try truth(try evaluate(condition)) ? yes : no
+            if !branch.isEmpty { return .inline(branch) }
         case .ifBlock(let condition):
             if try !truth(try evaluate(condition)) {
                 return .jump(statement.alternate >= 0 ? statement.alternate + 1 : statement.target + 1)
@@ -147,6 +204,7 @@ final class QBasicInterpreter {
             if !forContinues(start, end: end, step: step) {
                 return .jump(statement.target + 1)
             }
+            guard forFrames.count < 256 else { throw QBasicProblem("FOR stack overflow") }
             forFrames.append(QBasicForFrame(variable: variable, end: end, step: step, body: pc + 1))
         case .next(let variable):
             guard let frame = forFrames.last, variable == nil || variable == frame.variable else {
@@ -178,22 +236,20 @@ final class QBasicInterpreter {
         case .goto(let line):
             return .jump(try destination(line))
         case .gosub(let line):
-            gosubs.append(next)
-            return .jump(try destination(line))
+            return .call(try destination(line))
         case .return:
-            guard let returning = gosubs.popLast() else { throw QBasicProblem("RETURN without GOSUB") }
-            return .jump(returning)
+            return .return
         case .on(let expression, let isGosub, let targets):
             let selected = try integer(try number(try evaluate(expression)))
             guard selected > 0, selected <= targets.count else { break }
-            if isGosub { gosubs.append(next) }
-            return .jump(try destination(targets[selected - 1]))
+            let target = try destination(targets[selected - 1])
+            return isGosub ? .call(target) : .jump(target)
         case .dim(let specs):
             for spec in specs {
                 var bounds: [Int] = []
                 for expression in spec.bounds { bounds.append(try integer(try number(try evaluate(expression)))) }
                 guard arrays[spec.name] == nil else { throw QBasicProblem("Duplicate definition") }
-                arrays[spec.name] = try QBasicArray(name: spec.name, bounds: bounds)
+                arrays[spec.name] = try makeArray(name: spec.name, bounds: bounds)
             }
         case .swap(let a, let b):
             let left = try resolve(a)
@@ -223,15 +279,25 @@ final class QBasicInterpreter {
         return .next
     }
 
-    private func executeInline(_ statements: [QBasicStatement], pc: Int, next: Int) throws -> QBasicFlow? {
-        for statement in statements {
-            let flow = try execute(statement, pc: pc, next: next)
-            switch flow {
-            case .next: continue
-            default: return flow
-            }
+    private func checkInterrupted(line: Int) throws {
+        guard gInterrupted != 0 else { return }
+        gInterrupted = 0
+        throw QBasicInterrupt(line: line)
+    }
+
+    private func sleep(_ milliseconds: Int, line: Int) throws {
+        if milliseconds == 0 {
+            io.sleep(0)
+            try checkInterrupted(line: line)
+            return
         }
-        return nil
+        var remaining = milliseconds
+        while remaining > 0 {
+            let chunk = min(remaining, 40)
+            io.sleep(chunk)
+            remaining -= chunk
+            try checkInterrupted(line: line)
+        }
     }
 
     private func destination(_ line: Int) throws -> Int {
@@ -245,6 +311,12 @@ final class QBasicInterpreter {
 
     // MARK: Variables and arrays
 
+    private func makeArray(name: String, bounds: [Int]) throws -> QBasicArray {
+        let array = try QBasicArray(name: name, bounds: bounds, limit: 1_000_000 - arrayElementCount)
+        arrayElementCount += array.values.count
+        return array
+    }
+
     private enum Reference {
         case variable(String)
         case element(String, Int)
@@ -257,7 +329,7 @@ final class QBasicInterpreter {
         var indices: [Int] = []
         for expression in target.indices { indices.append(try integer(try number(try evaluate(expression)))) }
         if arrays[target.name] == nil {
-            arrays[target.name] = try QBasicArray(name: target.name, bounds: Array(repeating: 10, count: indices.count))
+            arrays[target.name] = try makeArray(name: target.name, bounds: Array(repeating: 10, count: indices.count))
         }
         guard let array = arrays[target.name] else { throw QBasicProblem("Subscript out of range") }
         return .element(target.name, try array.offset(indices))
@@ -295,6 +367,9 @@ final class QBasicInterpreter {
     // MARK: Expressions
 
     private func evaluate(_ expression: QBasicExpression) throws -> QBasicValue {
+        guard evaluationDepth < 128 else { throw QBasicProblem("Expression too complex") }
+        evaluationDepth += 1
+        defer { evaluationDepth -= 1 }
         switch expression {
         case .number(let n): return .number(n)
         case .string(let s): return .string(s)
@@ -671,9 +746,9 @@ enum QBasicFormat {
         }
         guard digits > 0 else { return 0 }
         let exponent = end
-        if end < chars.count, chars[end] == "e" || end < chars.count, chars[end] == "E" {
+        if end < chars.count, chars[end] == "e" || chars[end] == "E" {
             end += 1
-            if end < chars.count, chars[end] == "+" || end < chars.count, chars[end] == "-" { end += 1 }
+            if end < chars.count, chars[end] == "+" || chars[end] == "-" { end += 1 }
             let exponentDigits = end
             while end < chars.count, chars[end].isNumber { end += 1 }
             if end == exponentDigits { end = exponent }
