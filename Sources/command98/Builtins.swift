@@ -70,7 +70,7 @@ extension Shell {
     /// The real REM handler is the "back to the prompt" routine at transient 0x0104. Same energy.
     func cmdRem(_ c: Ctx) {}
 
-    func cmdCls(_ c: Ctx) { c.out.write("\u{1B}[2J\u{1B}[H") }
+    func cmdCls(_ c: Ctx) { c.out.control("\u{1B}[2J\u{1B}[H") }
 
     func cmdVer(_ c: Ctx) {
         c.out.line()

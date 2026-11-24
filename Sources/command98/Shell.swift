@@ -198,6 +198,8 @@ final class Shell {
     var inFor = false
     var pipeCounter = 0
     var nlsLoaded = false
+    /// what CONFIG.SYS asked for, even when there is nothing to do about it
+    var config = ConfigValues()
     /// SUBSTed drives, letter -> what it points at (for SUBST with no arguments)
     var substs: [Character: String] = [:]
 
