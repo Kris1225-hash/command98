@@ -395,4 +395,21 @@ final class QBasicInterpreterTests: XCTestCase {
         XCTAssertEqual(output, " 4 \n")
         XCTAssertEqual(test.shell.errorLevel, 0)
     }
+
+    func testRunWithRedirectedOutputLeavesScreenControlOut() {
+        let test = TestShell()
+        Shell.installStubs(root: test.root)
+        test.shell.envSet("PATH", "C:\\WINDOWS\\COMMAND")
+        test.write("RUNME.BAS", "CLS: COLOR 14,1: LOCATE 4,9: PRINT \"here\"\n")
+
+        // TestShell's stdout is a file, so this is the redirected case: PRINT must still
+        // land in the log, but no escape sequence may be written into it.
+        let output = test.run("QBASIC /RUN C:\\RUNME.BAS")
+
+        XCTAssertTrue(output.contains("here"), output)
+        XCTAssertFalse(output.contains("\u{1B}"), output)
+        XCTAssertFalse(output.contains("[2J"), output)
+        XCTAssertFalse(output.contains("[93;44m"), output)
+        XCTAssertEqual(test.shell.errorLevel, 0)
+    }
 }
