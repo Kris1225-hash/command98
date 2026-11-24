@@ -61,8 +61,11 @@ extension Shell {
             return
         }
 
+        AnsiSys.resetAttribute()
         AnsiSys.background = bg
         AnsiSys.foreground = fg
-        c.out.control(AnsiSys.sgr(fg: fg, bg: bg))
+        // A bold SGR from the prompt or a batch file must not survive COLOR: DOS treats
+        // the attribute byte as complete, so 07 is light grey, not bright white.
+        c.out.control("\u{1B}[0m" + AnsiSys.sgr(fg: fg, bg: bg))
     }
 }

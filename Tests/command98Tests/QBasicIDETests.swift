@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#endif
 import XCTest
 @testable import command98
 
@@ -192,6 +189,64 @@ final class QBasicIDETests: XCTestCase {
         var editor = QBasicEditor(source: "")
         try editor.load("INPUT.BAS", shell: test.shell)
         XCTAssertEqual(editor.source, "PRINT 1\nPRINT 2\nPRINT 3\n")
+    }
+
+    // MARK: initial load
+
+    func testFailedInitialLoadLeavesAnEmptyUntitledBuffer() throws {
+        let test = TestShell()
+        // A write-only file exists but cannot be read: the load fails and Ctrl+S must not
+        // turn the sample text into a replacement for it.
+        let file = test.write("SECRET.BAS", "ORIGINAL\r\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o200],
+                                              ofItemAtPath: file.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: file.path)
+        }
+
+        var editor = QBasicEditor()
+        QBasicIDE.openInitial(&editor, file: "C:\\SECRET.BAS", shell: test.shell)
+
+        XCTAssertNil(editor.fileName, "a failed load must not keep the failed name")
+        XCTAssertEqual(editor.source, "", "the buffer must be empty, not the sample program")
+        XCTAssertFalse(editor.dirty)
+        XCTAssertTrue(editor.statusMessage?.contains("Cannot open C:\\SECRET.BAS") == true,
+                      editor.statusMessage ?? "no status")
+
+        // Ctrl+S now asks for a name instead of writing over the file that would not open.
+        XCTAssertEqual(editor.handle(.ctrl("S")), .save)
+        var prompted = editor
+        prompted.beginPrompt(.save)
+        XCTAssertEqual(prompted.prompt?.kind, .save)
+        XCTAssertThrowsError(try editor.save(shell: test.shell))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                              ofItemAtPath: file.path)
+        XCTAssertEqual(test.read("SECRET.BAS"), "ORIGINAL\r\n")
+    }
+
+    func testFailedInitialLoadFromADirectoryAlsoLeavesTheBufferUntitled() throws {
+        let test = TestShell()
+        try FileManager.default.createDirectory(at: test.root.appendingPathComponent("FOLDER.BAS"),
+                                                withIntermediateDirectories: true)
+
+        var editor = QBasicEditor()
+        QBasicIDE.openInitial(&editor, file: "FOLDER.BAS", shell: test.shell)
+
+        XCTAssertNil(editor.fileName)
+        XCTAssertEqual(editor.source, "")
+        XCTAssertTrue(editor.statusMessage?.contains("Cannot open FOLDER.BAS") == true)
+    }
+
+    func testMissingInitialFileKeepsItsNameForAFreshSave() {
+        let test = TestShell()
+        var editor = QBasicEditor()
+        QBasicIDE.openInitial(&editor, file: "C:\\NEW.BAS", shell: test.shell)
+
+        XCTAssertEqual(editor.fileName, "C:\\NEW.BAS")
+        XCTAssertEqual(editor.source, QBasicEditor.sampleSource)
+        XCTAssertFalse(editor.statusMessage?.contains("Cannot open") == true)
     }
 
     func testPromptProducesAFileAction() {

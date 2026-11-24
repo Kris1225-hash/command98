@@ -94,7 +94,7 @@ The external commands live where Win98 kept them, as stub files on the sandbox d
 - `REM > file` creates an empty file.
 - `COPY *.TXT ALL.TXT` concatenates the files.
 - `COPY CON` reads until ^Z.
-- `BSOD` is a hidden internal command, not one of the original 40. The screen and every word on it are ours. `WIN` still needs `WIN.COM`, like 1998.
+- `BSOD` is a hidden internal command, not one of the original 40. The screen and every word on it are ours; `WIN` itself opens the file manager.
 
 ## License
 

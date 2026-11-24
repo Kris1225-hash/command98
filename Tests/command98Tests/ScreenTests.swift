@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#endif
 import XCTest
 @testable import command98
 
@@ -22,6 +19,17 @@ final class ScreenTests: XCTestCase {
         XCTAssertEqual(s[3, 0].ch, "A")
         XCTAssertEqual(s[3, 1].ch, "C")
         XCTAssertEqual(s[4, 1].ch, "D")
+    }
+
+    func testCRLFMovesToTheNextRowOnce() {
+        let s = Screen(width: 10, height: 3)
+        s.write(3, 0, "AB\r\nCD")
+        XCTAssertEqual(s[3, 0].ch, "A")
+        XCTAssertEqual(s[4, 0].ch, "B")
+        XCTAssertEqual(s[3, 1].ch, "C")
+        XCTAssertEqual(s[4, 1].ch, "D")
+        XCTAssertEqual(s[0, 0].ch, " ")
+        XCTAssertEqual(s[0, 1].ch, " ")
     }
 
     func testBoxDrawsCornersAndClearsInside() {
@@ -61,5 +69,67 @@ final class ScreenTests: XCTestCase {
         XCTAssertFalse(rendered.contains("\u{1B}[1;1H"))
         XCTAssertFalse(rendered.contains("\u{1B}[3;1H"))
         XCTAssertTrue(rendered.contains("NEW"))
+    }
+
+    func testPutRejectsControlGlyphs() {
+        let s = Screen(width: 6, height: 1)
+        s.put(0, 0, "\u{1B}")
+        s.put(1, 0, "\t")
+        s.put(2, 0, "\u{7F}")
+        s.put(3, 0, Character(UnicodeScalar(0x9B)!)) // 8-bit CSI
+        s.put(4, 0, "\u{2500}")
+        s.put(5, 0, "\u{1F600}")
+        XCTAssertEqual(s[0, 0].ch, "\u{00B7}")
+        XCTAssertEqual(s[1, 0].ch, " ")
+        XCTAssertEqual(s[2, 0].ch, "\u{00B7}")
+        XCTAssertEqual(s[3, 0].ch, "\u{00B7}")
+        XCTAssertEqual(s[4, 0].ch, "\u{2500}")
+        XCTAssertEqual(s[5, 0].ch, "\u{1F600}")
+    }
+
+    func testControlBytesInFilesNeverReachTheTerminal() {
+        let s = Screen(width: 24, height: 2)
+        // A .BAS file can be any bytes; loading it must not paint a terminal command.
+        s.write(0, 0, "\u{1B}[?1049l\u{1B}[2J")
+        XCTAssertEqual(s[0, 0].ch, "\u{00B7}")
+        XCTAssertFalse(s.cells.contains { cell in
+            cell.ch.unicodeScalars.contains { $0.properties.generalCategory == .control }
+        })
+
+        let rendered = renderText(s)
+        XCTAssertFalse(rendered.contains("\u{1B}[?1049l"))
+        XCTAssertFalse(rendered.contains("\u{1B}[2J"))
+    }
+
+    func testTabExpandsToEightColumnStopsAndStaysOnThePage() {
+        let s = Screen(width: 80, height: 2)
+        s.write(3, 0, "A\tB")
+        XCTAssertEqual(s[3, 0].ch, "A")
+        XCTAssertEqual(s[8, 0].ch, "B")
+        XCTAssertEqual(s[4, 0].ch, " ")
+
+        let narrow = Screen(width: 10, height: 1)
+        let end = narrow.write(8, 0, "\tX")
+        XCTAssertEqual(end, 10)
+        XCTAssertEqual(narrow[8, 0].ch, " ")
+        XCTAssertEqual(narrow[9, 0].ch, " ")
+        XCTAssertFalse(narrow.cells.contains { $0.ch == "\t" })
+
+        let edge = Screen(width: 80, height: 1)
+        XCTAssertEqual(edge.write(79, 0, "\tZ"), 80)
+        XCTAssertEqual(edge[79, 0].ch, " ")
+        XCTAssertFalse(edge.cells.contains { $0.ch == "\t" })
+    }
+
+    private func renderText(_ screen: Screen) -> String {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("command98-screen-\(UUID().uuidString)").path
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        guard fd >= 0 else { return "" }
+        screen.render(to: Out(fd))
+        close(fd)
+        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        unlink(path)
+        return text
     }
 }

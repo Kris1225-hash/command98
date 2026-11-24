@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#endif
 import XCTest
 @testable import command98
 
@@ -138,6 +135,55 @@ final class AnsiColorTests: XCTestCase {
         XCTAssertEqual(AnsiSys.flush(), "")
     }
 
+    func testPendingSequencesAreKeptPerFileDescriptor() {
+        XCTAssertEqual(AnsiSys.encode("A\u{1B}[31", fd: 1), "A")
+        // The other descriptor sees ordinary text, not the rest of fd 1's sequence.
+        XCTAssertEqual(AnsiSys.encode("Bm", fd: 2), "Bm")
+        XCTAssertEqual(AnsiSys.foreground, 7)
+        // fd 1 still owns its half-written sequence.
+        XCTAssertEqual(AnsiSys.encode("m!", fd: 1), "\u{1B}[31m!")
+        XCTAssertEqual(AnsiSys.foreground, 4)
+        XCTAssertEqual(AnsiSys.flush(2), "")
+    }
+
+    func testFlushDrainsOneDescriptorAtATime() {
+        _ = AnsiSys.encode("X\u{1B}[", fd: 1)
+        _ = AnsiSys.encode("Y\u{1B}", fd: 2)
+        XCTAssertEqual(AnsiSys.flush(1), "\u{1B}[")
+        XCTAssertEqual(AnsiSys.flush(1), "")
+        XCTAssertEqual(AnsiSys.flush(2), "\u{1B}")
+        XCTAssertEqual(AnsiSys.flushAll(), "")
+    }
+
+    func testFlushAllDrainsEveryDescriptorInOrder() {
+        _ = AnsiSys.encode("\u{1B}[1", fd: 2)
+        _ = AnsiSys.encode("\u{1B}[3", fd: 1)
+        XCTAssertEqual(AnsiSys.flushAll(), "\u{1B}[3\u{1B}[1")
+        XCTAssertEqual(AnsiSys.flush(), "")
+        XCTAssertEqual(AnsiSys.flush(1), "")
+    }
+
+    func testHugeUnfinishedSequenceIsPassedThroughAndForgotten() {
+        let big = "\u{1B}[" + String(repeating: "1", count: 100_000)
+        XCTAssertEqual(AnsiSys.encode(big, fd: 1), big)
+        XCTAssertEqual(AnsiSys.flush(1), "")
+        // The abandoned tail is not glued to the next write.
+        XCTAssertEqual(AnsiSys.encode("[32m", fd: 1), "[32m")
+        XCTAssertEqual(AnsiSys.foreground, 7)
+    }
+
+    func testIncrementalUnfinishedSequenceStaysBounded() {
+        _ = AnsiSys.encode("\u{1B}[", fd: 1)
+        var emitted = 0
+        for _ in 0..<100_000 {
+            emitted += AnsiSys.encode("1", fd: 1).count
+        }
+        // At most one capped tail is still held, never the whole 100k stream.
+        XCTAssertLessThanOrEqual(AnsiSys.flush(1).count, 256)
+        // Past the cap the bytes are forwarded as normal text instead of being swallowed.
+        XCTAssertGreaterThan(emitted, 99_000)
+    }
+
     func testUnknownCSIIsNotCorrupted() {
         XCTAssertEqual(AnsiSys.encode("\u{1B}[?1234z", fd: 1), "\u{1B}[?1234z")
         XCTAssertEqual(AnsiSys.encode("\u{1B}[5;99m", fd: 1), "\u{1B}[5;99m")
@@ -152,7 +198,8 @@ final class AnsiColorTests: XCTestCase {
     func testColorWhiteOnBlue() {
         let t = colorShell()
         let out = t.run("COLOR 1F")
-        XCTAssertEqual(out, "\u{1B}[97;44m")
+        XCTAssertEqual(out, "\u{1B}[0m\u{1B}[97;44m")
+        XCTAssertFalse(AnsiSys.bold)
         XCTAssertEqual(AnsiSys.foreground, 15)
         XCTAssertEqual(AnsiSys.background, 1)
         XCTAssertEqual(t.shell.errorLevel, 0)
@@ -161,7 +208,7 @@ final class AnsiColorTests: XCTestCase {
     func testColorLightGreyOnBlack() {
         let t = colorShell()
         let out = t.run("COLOR 07")
-        XCTAssertEqual(out, "\u{1B}[37;40m")
+        XCTAssertEqual(out, "\u{1B}[0m\u{1B}[37;40m")
         XCTAssertEqual(AnsiSys.foreground, 7)
         XCTAssertEqual(AnsiSys.background, 0)
         XCTAssertEqual(t.shell.errorLevel, 0)
@@ -170,23 +217,51 @@ final class AnsiColorTests: XCTestCase {
     func testColorLightGreenOnBlack() {
         let t = colorShell()
         let out = t.run("COLOR 0A")
-        XCTAssertEqual(out, "\u{1B}[92;40m")
+        XCTAssertEqual(out, "\u{1B}[0m\u{1B}[92;40m")
         XCTAssertEqual(AnsiSys.foreground, 10)
         XCTAssertEqual(AnsiSys.background, 0)
     }
 
     func testColorAcceptsLowercaseHex() {
         let t = colorShell()
-        XCTAssertEqual(t.run("COLOR 1f"), "\u{1B}[97;44m")
+        XCTAssertEqual(t.run("COLOR 1f"), "\u{1B}[0m\u{1B}[97;44m")
         XCTAssertEqual(AnsiSys.foreground, 15)
         XCTAssertEqual(AnsiSys.background, 1)
+    }
+
+    func testColorClearsABoldAttributeFirst() {
+        let t = colorShell()
+        _ = AnsiSys.encode("\u{1B}[1m", fd: 1)
+        XCTAssertTrue(AnsiSys.bold)
+        XCTAssertEqual(AnsiSys.foreground, 15)
+
+        let out = t.run("COLOR 07")
+        XCTAssertTrue(out.hasPrefix("\u{1B}[0m"), "output was \(out)")
+        XCTAssertEqual(out, "\u{1B}[0m\u{1B}[37;40m")
+        XCTAssertFalse(AnsiSys.bold)
+        XCTAssertEqual(AnsiSys.foreground, 7)
+    }
+
+    func testColorWhiteOnBlueAlsoClearsBold() {
+        let t = colorShell()
+        _ = AnsiSys.encode("\u{1B}[1m", fd: 1)
+        XCTAssertTrue(AnsiSys.bold)
+
+        let out = t.run("COLOR 1F")
+        XCTAssertTrue(out.hasPrefix("\u{1B}[0m"), "output was \(out)")
+        XCTAssertEqual(out, "\u{1B}[0m\u{1B}[97;44m")
+        XCTAssertFalse(AnsiSys.bold)
+        XCTAssertEqual(AnsiSys.foreground, 15)
     }
 
     func testColorWithoutArgumentsResets() {
         let t = colorShell()
         _ = t.run("COLOR 1F")
+        _ = AnsiSys.encode("\u{1B}[1m", fd: 1)
+        XCTAssertTrue(AnsiSys.bold)
         let out = t.run("COLOR")
         XCTAssertEqual(out, "\u{1B}[0m")
+        XCTAssertFalse(AnsiSys.bold)
         XCTAssertEqual(AnsiSys.foreground, 7)
         XCTAssertEqual(AnsiSys.background, 0)
         XCTAssertEqual(t.shell.errorLevel, 0)

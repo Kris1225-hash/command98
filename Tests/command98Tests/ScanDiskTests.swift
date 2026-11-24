@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(Glibc)
-import Glibc
-#endif
 import XCTest
 @testable import command98
 
@@ -216,6 +213,32 @@ final class ScanDiskTests: XCTestCase {
         XCTAssertEqual(gInterrupted, 0)
     }
 
+    func testShowRunsInsideTheRawModeWrapperAndRestoresTheScreen() {
+        let t = TestShell()
+        t.write("A.TXT", "one")
+        let plan = ScanDisk.plan(drive: "C", shell: t.shell)
+        let out = temporaryOutput()
+        var wrappers = 0
+        var restoredInsideWrapper = false
+        let outcome = ScanDisk.show(plan: plan, out: out.0, driver: .init(
+            poll: { .char(" ") },
+            wait: {}
+        ), raw: { body in
+            wrappers += 1
+            let result = body()
+            // Screen.end is deferred inside the body, so it has run by the time raw mode
+            // is left again.
+            let shown = (try? String(contentsOfFile: out.1, encoding: .utf8)) ?? ""
+            restoredInsideWrapper = shown.contains("\u{1B}[?1049l")
+            return result
+        })
+        _ = finishOutput(out)
+
+        XCTAssertEqual(wrappers, 1, "the interactive pass must enable raw mode")
+        XCTAssertTrue(restoredInsideWrapper, "the screen must be restored inside the wrapper")
+        XCTAssertEqual(outcome, .completed)
+    }
+
     // MARK: read-only guarantees
 
     func testPassLeavesEverySentinelUntouched() throws {
@@ -261,6 +284,13 @@ final class ScanDiskTests: XCTestCase {
         XCTAssertTrue(shown.contains("bytes free"))
         XCTAssertTrue(shown.contains("No errors found by this read-only pass."))
         XCTAssertTrue(shown.contains("Nothing was changed."))
+    }
+
+    func testRedirectedDescriptorIsNotAFullScreenTerminal() {
+        let out = temporaryOutput()
+        XCTAssertFalse(Console.isFullScreen(out.0, inputIsTTY: true),
+                       "a file descriptor, even fd 1, is not a terminal")
+        _ = finishOutput(out)
     }
 
     func testInvalidDriveIsRejectedBeforeAnyScreen() {

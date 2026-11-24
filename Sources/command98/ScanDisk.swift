@@ -201,9 +201,15 @@ enum ScanDisk {
     }
 
     /// Runs the full-screen pass. Tests give it a scripted key source and a no-op wait;
-    /// the real command polls the terminal and sleeps between frames.
+    /// the real command polls the terminal and sleeps between frames. The page needs raw
+    /// mode, so Esc and the "press any key" page arrive without a line ending.
     @discardableResult
-    static func show(plan: Plan, out: Out, driver: Driver) -> Outcome {
+    static func show(plan: Plan, out: Out, driver: Driver,
+                     raw: ((() -> Outcome) -> Outcome) = Console.withRaw) -> Outcome {
+        raw { draw(plan: plan, out: out, driver: driver) }
+    }
+
+    private static func draw(plan: Plan, out: Out, driver: Driver) -> Outcome {
         Screen.begin(out)
         defer { Screen.end(out) }
 
@@ -290,7 +296,9 @@ extension Shell {
         let work = ScanDisk.plan(drive: drive, shell: self, surface: surface)
 
         // A redirected screen or non-terminal gets one plain line, never escape codes.
-        if !Console.isTTY || c.io.inFD != 0 || c.io.out.fd != 1 {
+        // The check is on the descriptor itself: `SCANDISK > LOG.TXT` leaves fd 1 in place
+        // but no longer points at a terminal.
+        if c.io.inFD != 0 || !Console.isFullScreen(c.out) {
             var line = "ScanDisk: drive \(drive): "
             line += "\(Fmt.num(Int64(work.files))) files, \(Fmt.num(Int64(work.directories))) directories, "
             line += "\(Fmt.num(work.freeBytes)) bytes free. "

@@ -82,8 +82,10 @@ enum Console {
         }
     }
 
-    static func pending(_ ms: Int32) -> Bool {
-        var p = pollfd(fd: 0, events: Int16(POLLIN), revents: 0)
+    static func pending(_ ms: Int32) -> Bool { pending(0, ms) }
+
+    static func pending(_ fd: Int32, _ ms: Int32) -> Bool {
+        var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         return poll(&p, 1, ms) > 0
     }
 
