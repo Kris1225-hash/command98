@@ -296,4 +296,45 @@ final class QBasicIDETests: XCTestCase {
         close(fd)
         unlink(path)
     }
+
+    func testKeyReaderCtrlCDuringCSIIsInterrupt() {
+        // ESC '[' then ^C: the old reader blocked on a third byte and could leave the
+        // alternate screen behind. ^C must win as soon as it is read.
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 91, -2])),
+                       .key(.interrupt, control: false))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([-2])),
+                       .key(.interrupt, control: false))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 91, 45, -2])),
+                       .key(.interrupt, control: false))
+    }
+
+    func testKeyReaderTruncatedCSIEndsAsEscape() {
+        // No final byte ever arrives: return instead of hanging.
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 91])),
+                       .key(.escape, control: false))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 91, 49])),
+                       .key(.escape, control: false))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 91, 49, 59])),
+                       .key(.escape, control: false))
+    }
+
+    func testKeyReaderSS3AndAltLetters() {
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 79, 80])),
+                       .key(.f(1), control: false))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 79, 72])),
+                       .key(.home, control: false))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 82])),
+                       .alt("R"))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded([27, 114])),
+                       .alt("R"))
+    }
+
+    func testKeyReaderKeepsModifiedHomeAndEnd() {
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded(Array("\u{1B}[1;5H".utf8).map(Int.init))),
+                       .key(.home, control: true))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded(Array("\u{1B}[1;5F".utf8).map(Int.init))),
+                       .key(.end, control: true))
+        XCTAssertEqual(QBasicIDEKeyReader.read(from: .seeded(Array("\u{1B}[A".utf8).map(Int.init))),
+                       .key(.up, control: false))
+    }
 }
