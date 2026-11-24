@@ -13,29 +13,63 @@ enum QBasicIDEEvent: Equatable {
 }
 
 enum QBasicIDEKeyReader {
-    static func read() -> QBasicIDEEvent {
-        let byte = Console.readByte()
+    /// Where the reader gets bytes. Production polls the console; tests seed an array,
+    /// so the reader's continuation logic is exercised without a real terminal.
+    struct ByteSource {
+        /// The next byte, blocking like a terminal. -1 is EOF and -2 is ^C.
+        var read: () -> Int
+        /// True when another byte arrives within `ms`.
+        var ready: (Int32) -> Bool
+
+        static func console() -> ByteSource {
+            ByteSource(read: { Console.readByte() }, ready: { Console.pending($0) })
+        }
+
+        /// An in-memory source whose bytes are all available immediately.
+        static func seeded(_ bytes: [Int]) -> ByteSource {
+            var remaining = bytes
+            return ByteSource(
+                read: { remaining.isEmpty ? -1 : remaining.removeFirst() },
+                ready: { _ in !remaining.isEmpty })
+        }
+    }
+
+    static func read(from source: ByteSource = .console()) -> QBasicIDEEvent {
+        let byte = source.read()
+        if byte == -2 { return .key(.interrupt, control: false) }
         guard byte == 27 else {
             return QBasicIDEEvent(KeyReader.decode(byte) ?? .unknown)
         }
-        guard Console.pending(30) else { return QBasicIDEEvent(.escape) }
+        guard source.ready(30) else { return QBasicIDEEvent(.escape) }
 
-        let first = Console.readByte()
+        let first = source.read()
+        if first == -2 { return .key(.interrupt, control: false) }
         guard first >= 0 else { return QBasicIDEEvent(.escape) }
         if first == 91 { // '[': CSI parameters finish at a byte in @...~.
             var sequence = "["
+            var complete = false
             while sequence.count < 18 {
-                let next = Console.readByte()
+                // A truncated sequence must not leave the program blocked in the
+                // alternate screen, and ^C must win over a half-read CSI.
+                guard source.ready(30) else { break }
+                let next = source.read()
+                if next == -2 { return .key(.interrupt, control: false) }
                 guard next >= 0 else { break }
                 sequence.append(Character(UnicodeScalar(UInt8(next))))
-                if next >= 0x40 && next <= 0x7E { break }
+                if next >= 0x40 && next <= 0x7E {
+                    complete = true
+                    break
+                }
             }
-            return decodeEscape(sequence)
+            return complete ? decodeEscape(sequence) : QBasicIDEEvent(.escape)
         }
         if first == 79 { // 'O': the short SS3 function-key and Home/End forms.
             var sequence = "O"
-            let next = Console.readByte()
-            if next >= 0 { sequence.append(Character(UnicodeScalar(UInt8(next)))) }
+            guard source.ready(30) else { return QBasicIDEEvent(.escape) }
+            let next = source.read()
+            if next == -2 { return .key(.interrupt, control: false) }
+            guard next >= 0 else { return QBasicIDEEvent(.escape) }
+            sequence.append(Character(UnicodeScalar(UInt8(next))))
             return decodeEscape(sequence)
         }
         if first < 128 {
