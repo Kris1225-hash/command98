@@ -223,19 +223,26 @@ final class DebugToolTests: XCTestCase {
     func testLoadModestFileThatOverflowsMemoryIsRefused() throws {
         let shell = TestShell()
         let url = shell.root.appendingPathComponent("BIG.BIN")
-        try Data(repeating: 0x90, count: 0x10001).write(to: url)
-        #if !os(Windows)
-        // Unreadable to a normal user: the size check must answer before any read attempt.
-        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
-        defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
-        }
-        #endif
-
-        let (session, sink) = make([], files: DebugTool.files(for: shell.shell))
+        let big = DebugPath(dosPath: "C:\\BIG.BIN",
+                            url: url,
+                            exists: true,
+                            readOnly: false,
+                            size: 0x10001,
+                            inside: true,
+                            rootPath: shell.root.path)
+        var reads = 0
+        let files = DebugFiles(resolve: { _ in big },
+                               read: { _, _ in
+                                   reads += 1
+                                   XCTFail("a file whose known size cannot fit must not be read")
+                                   return Data([0x90])
+                               },
+                               write: { _, _ in })
+        let (session, sink) = make([], files: files)
         session.execute("N C:\\BIG.BIN")
         session.execute("L")
 
+        XCTAssertEqual(reads, 0)
         XCTAssertTrue(sink.text.contains("File too large for memory"), sink.text)
         XCTAssertFalse(sink.text.contains("Error reading file"), sink.text)
         XCTAssertFalse(session.hasImage)
@@ -321,6 +328,7 @@ final class DebugToolTests: XCTestCase {
         let original: [UInt8] = [9, 8, 7, 6]
         let url = try writeFile(shell, "LOCKED.COM", original)
         Platform.setAttributes(url.path, readOnly: true)
+        defer { Platform.setAttributes(url.path, readOnly: false) }
 
         let (session, sink) = make([], files: DebugTool.files(for: shell.shell)) { _ in
             XCTFail("a read-only file must never reach the confirmation")
@@ -358,10 +366,50 @@ final class DebugToolTests: XCTestCase {
         session.execute("L")
         session.execute("E 100 00 00 00 00")
         session.execute("N \(outside)")
+        #if os(Windows)
+        // The failed N must not leave C:\OK.COM as the write target.
+        #else
         session.execute("W")
+        #endif
 
         XCTAssertTrue(sink.text.contains(refusal), sink.text)
         XCTAssertEqual(try Data(contentsOf: url), Data([1, 2, 3, 4]))
+    }
+
+    /// Write-time containment: the name resolved earlier, but the opened target still
+    /// lands outside the drive through a parent link. DEBUG must refuse before truncating.
+    func testWriteFileRejectsResolvedSymlinkOutsideDrive() throws {
+        let shell = TestShell()
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("command98-write-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let victim = outside.appendingPathComponent("VICTIM")
+        let original = Data([0xCA, 0xFE, 0xBA, 0xBE])
+        try original.write(to: victim)
+
+        let link = shell.root.appendingPathComponent("LINK")
+        do {
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        } catch {
+            throw XCTSkip("symbolic links unavailable: \(error)")
+        }
+        defer { try? FileManager.default.removeItem(at: link) }
+
+        // inside: true deliberately lies, as a resolve-then-retarget window would.
+        let path = DebugPath(dosPath: "C:\\LINK\\VICTIM",
+                             url: link.appendingPathComponent("VICTIM"),
+                             exists: true,
+                             readOnly: false,
+                             size: 4,
+                             inside: true,
+                             rootPath: shell.root.path)
+        XCTAssertThrowsError(try DebugTool.writeFile(path, Data([9, 9, 9, 9]))) { error in
+            guard case DebugWriteError.outsideDrive = error else {
+                return XCTFail("expected outsideDrive, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: victim), original)
     }
 
     #if os(Windows)

@@ -444,7 +444,7 @@ extension Shell {
             return
         }
         c.out.line()
-        c.out.line("No. Formatting disks is Disk Utility's job, and it asks more questions first.")
+        c.out.line("No. Formatting disks is Disk Management's job, and it asks more questions first.")
         errorLevel = 4
     }
 
@@ -464,7 +464,7 @@ extension Shell {
     }
 
     func uScandisk(_ c: Ctx) {
-        c.out.line("ScanDisk only knows FAT. For APFS, use First Aid in Disk Utility.")
+        c.out.line("ScanDisk only knows FAT. For NTFS, use Error checking in the drive's Properties.")
         errorLevel = 1
     }
 

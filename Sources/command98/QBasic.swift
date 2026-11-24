@@ -126,8 +126,13 @@ private final class QBasicConsoleIO: QBasicIO {
     }
 
     func key() -> Key? {
+        // Known limitation: redirected stdin (io.inFD != 0) is not polled. Windows has no
+        // cheap non-blocking peek for a regular file, so INKEY$ returns nil there rather
+        // than buffering the whole file. The console path is the one /RUN needs.
         guard io.inFD == 0, KeyReader.hasBufferedKey(fd: 0) else { return nil }
-        return KeyReader.read()
+        // Windows reports the key-down before ReadFile has a byte; line input would make
+        // ReadFile wait for Enter. Raw mode for this one key keeps INKEY$ prompt.
+        return Console.withRaw { KeyReader.read() }
     }
 }
 

@@ -222,7 +222,24 @@ enum Platform {
         fd == 0 && pending(ms)
     }
 
+    /// Modifier and lock keys change state but never produce a byte for ReadFile.
+    /// Treating their key-down as "input ready" would make the full-screen tools block.
+    private static func producesInput(_ vk: UInt16) -> Bool {
+        switch vk {
+        case 0x10, 0x11, 0x12, 0x14,          // Shift, Ctrl, Alt, Caps Lock
+             0x5B, 0x5C, 0x5D,                // left/right Windows, Menu
+             0x90, 0x91,                      // Num Lock, Scroll Lock
+             0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, // left/right Shift, Ctrl, Alt
+             0xE5:                            // IME process key
+            return false
+        default:
+            return true // character, navigation, function and keypad keys
+        }
+    }
+
     /// Is a keypress waiting? Focus and mouse events wake the handle too, so skip those.
+    /// Pure modifiers are consumed and skipped as well: they are key-down events with
+    /// no corresponding byte, so returning true for them would strand the caller.
     static func pending(_ ms: Int32) -> Bool {
         guard let h = stdinHandle, isConsole(h) else { return false }
         let deadline = GetTickCount64() + UInt64(max(0, ms))
@@ -233,8 +250,12 @@ enum Platform {
             var rec = INPUT_RECORD()
             var n: DWORD = 0
             guard PeekConsoleInputW(h, &rec, 1, &n), n == 1 else { return false }
-            if rec.EventType == WORD(KEY_EVENT) && rec.Event.KeyEvent.bKeyDown.boolValue { return true }
-            ReadConsoleInputW(h, &rec, 1, &n) // throw away the non-key event
+            if rec.EventType == WORD(KEY_EVENT) {
+                let key = rec.Event.KeyEvent
+                if key.bKeyDown.boolValue && producesInput(key.wVirtualKeyCode) { return true }
+            }
+            // Non-key, key-up, or a modifier/lock: consume it and keep looking.
+            ReadConsoleInputW(h, &rec, 1, &n)
             if left == 0 { return false }
         }
     }

@@ -127,6 +127,8 @@ enum KeyReader {
     static let maxSequenceLength = 32
 
     /// One decoder per descriptor, so a held-back byte survives between calls.
+    /// Known limitation: two readers sharing an fd also share its decoder, so a held
+    /// byte can pass from one caller to another. The shell has one reader per fd today.
     private static var decoders: [Int32: KeyDecoder] = [:]
 
     /// A lone byte, not the start of an escape sequence.
@@ -138,7 +140,7 @@ enum KeyReader {
         case 9: return .tab
         case 8, 127: return .backspace
         case 3: return .interrupt
-        case 26: return .eof
+        case 26: return .ctrl("Z")
         case 0..<32: return .ctrl(Character(UnicodeScalar(UInt8(b + 64))))
         default:
             guard b < 128 else { return .unknown }

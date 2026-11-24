@@ -331,7 +331,8 @@ extension Shell {
             return
         }
         for f in contents { try? FileManager.default.removeItem(at: u.appendingPathComponent(f)) }
-        if rmdir(u.path) != 0 { c.out.line(bad) }
+        // FileManager takes a wide path; rmdir's narrow name would fail on non-ANSI names.
+        do { try FileManager.default.removeItem(at: u) } catch { c.out.line(bad) }
     }
 
     func cmdTruename(_ c: Ctx) {
