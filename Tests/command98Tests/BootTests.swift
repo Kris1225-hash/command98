@@ -118,6 +118,18 @@ final class BootTests: XCTestCase {
         XCTAssertTrue(plan.winComPresent)
     }
 
+    func testDirectoryNamedWinComCountsAsMissing() {
+        let t = TestShell()
+        t.write("MSDOS.SYS", "[Options]\r\nBootGUI=1\r\n")
+        let win = t.root.appendingPathComponent("WINDOWS/WIN.COM", isDirectory: true)
+        try? FileManager.default.createDirectory(at: win, withIntermediateDirectories: true)
+        XCTAssertTrue(isDir(win), "the fixture must be a directory")
+
+        let plan = Boot.plan(for: t.shell)
+        XCTAssertTrue(plan.splash)
+        XCTAssertFalse(plan.winComPresent, "a directory is not WIN.COM")
+    }
+
     func testEnabledPlanWithoutWinComReportsFailure() {
         let t = TestShell()
         t.write("MSDOS.SYS", "[Options]\r\nBootGUI=1\r\n")
@@ -191,16 +203,49 @@ final class BootTests: XCTestCase {
         XCTAssertFalse(output.contains("Press any key"), output)
     }
 
-    func testInteractiveRunUsesTheInjectedClockAndDoesNotWaitOnNonTTYInput() {
+    func testInteractiveRunRefusesToAnimateIntoARedirectedLog() {
         let t = TestShell()
         t.write("MSDOS.SYS", "[Options]\r\nBootGUI=1\r\n")
         t.write("WINDOWS/WIN.COM", "tribute")
         var frames = 0
+        var keys = 0
         let output = capture {
-            Boot.run(t.shell, out: $0, interactive: true, frameDelay: { frames += 1 })
+            Boot.run(t.shell, out: $0, interactive: true,
+                     frameDelay: { frames += 1 }, key: { keys += 1; return 13 })
+        }
+        XCTAssertEqual(frames, 0, "a redirected splash never animates")
+        XCTAssertEqual(keys, 0, "a redirected splash never waits for a key")
+        XCTAssertFalse(output.contains("\u{1B}[?1049h"), "no alternate screen in a log")
+        XCTAssertTrue(output.contains(Boot.splashText + "\n"), output)
+        XCTAssertFalse(output.contains("WIN.COM is missing"), output)
+    }
+
+    func testInteractiveRunAnimatesOnlyWhenTheOutputIsATerminal() {
+        let t = TestShell()
+        t.write("MSDOS.SYS", "[Options]\r\nBootGUI=1\r\n")
+        var frames = 0
+        let output = capture {
+            Boot.run(t.shell, out: $0, interactive: true, outputIsTTY: true,
+                     frameDelay: { frames += 1 }, key: { 13 })
         }
         XCTAssertEqual(frames, Boot.splashFrames)
         XCTAssertTrue(output.contains("\u{1B}[?1049h"), "no alternate screen")
         XCTAssertTrue(output.contains("\u{1B}[?1049l"), "alternate screen not restored")
+        XCTAssertTrue(output.contains("WIN.COM is missing, so Windows cannot continue loading.\n"))
+        XCTAssertTrue(output.contains("Press any key to return to the command prompt.\n"))
+    }
+
+    func testRedirectedSplashDoesNotWaitForAMissingWinComKey() {
+        let t = TestShell()
+        t.write("MSDOS.SYS", "[Options]\r\nBootGUI=1\r\n")
+        var keys = 0
+        let output = capture {
+            Boot.run(t.shell, out: $0, interactive: true,
+                     frameDelay: {}, key: { keys += 1; return 13 })
+        }
+        XCTAssertEqual(keys, 0)
+        XCTAssertTrue(output.contains("WIN.COM is missing, so Windows cannot continue loading.\n"))
+        XCTAssertTrue(output.contains("Press any key to return to the command prompt.\n"))
+        XCTAssertFalse(output.contains("\u{1B}"), "plain text only")
     }
 }

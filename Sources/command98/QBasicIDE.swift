@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// One console event. The shared Key decoder has no Alt modifier, so the IDE keeps that
 /// small piece of terminal knowledge here instead of widening the shared key API.
@@ -242,25 +243,13 @@ final class QBasicScreenIO: QBasicIO {
 /// running a buffer never saves it and never changes the shell's file system state.
 enum QBasicIDE {
     static func run(_ shell: Shell, _ io: IO, file: String?) -> Int32 {
-        guard io.inFD == 0, Console.isTTY else {
+        guard io.inFD == 0, Console.isFullScreen(io.out) else {
             io.out.line("QBASIC needs a console.")
             return 1
         }
 
         var editor = QBasicEditor()
-        if let file {
-            do {
-                let resolved = try shell.drives.resolve(file)
-                if resolved.exists {
-                    try editor.load(file, shell: shell)
-                } else {
-                    editor.reset(fileName: shell.dosShow(resolved))
-                }
-            } catch {
-                editor.reset(fileName: file)
-                editor.statusMessage = errorText("Cannot open \(file)", error)
-            }
-        }
+        if let file { openInitial(&editor, file: file, shell: shell) }
 
         gInterrupted = 0
         Screen.begin(io.out)
@@ -330,6 +319,23 @@ enum QBasicIDE {
                 }
                 paint()
             }
+        }
+    }
+
+    /// The buffer the IDE starts with. A file that exists but cannot be read must not keep
+    /// its name on the buffer: Ctrl+S would then overwrite the file that just failed. The
+    /// failed load leaves an empty, untitled buffer, so saving needs an explicit Save As.
+    static func openInitial(_ editor: inout QBasicEditor, file: String, shell: Shell) {
+        do {
+            let resolved = try shell.drives.resolve(file)
+            if resolved.exists {
+                try editor.load(file, shell: shell)
+            } else {
+                editor.reset(fileName: shell.dosShow(resolved))
+            }
+        } catch {
+            editor.reset(source: "", fileName: nil, dirty: false)
+            editor.statusMessage = errorText("Cannot open \(file)", error)
         }
     }
 

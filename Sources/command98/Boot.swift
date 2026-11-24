@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// The options IO.SYS would have read out of MSDOS.SYS. Only the ones that change what
 /// happens on this machine are kept: whether to show the graphical boot at all, whether
@@ -93,7 +94,8 @@ enum Boot {
         guard let root = shell.drives.table["C"]?.root else { return plan }
         plan.splash = options(root: root).bootGUI
         if let resolved = try? shell.drives.resolve("C:\\WINDOWS\\WIN.COM") {
-            plan.winComPresent = resolved.exists
+            // A directory with that name is not the program: it takes the missing-WIN path.
+            plan.winComPresent = resolved.exists && !isDir(shell.drives.url(resolved))
         }
         return plan
     }
@@ -148,15 +150,21 @@ enum Boot {
     // MARK: run
 
     /// Called from main between CONFIG.SYS and AUTOEXEC.BAT. The defaults keep an ordinary
-    /// start silent; tests can inject the output, the terminal flag and the frame clock.
+    /// start silent; tests can inject the output, the terminal flags, the frame clock and
+    /// the key source.
     static func run(_ shell: Shell,
                     out: Out = Console.tty,
                     interactive: Bool = Console.isTTY,
-                    frameDelay: () -> Void = { Thread.sleep(forTimeInterval: frameSeconds) }) {
+                    outputIsTTY: Bool? = nil,
+                    frameDelay: () -> Void = { Thread.sleep(forTimeInterval: frameSeconds) },
+                    key: () -> Int = { Console.readKey() }) {
         let plan = plan(for: shell)
         guard plan.splash else { return }
 
-        if interactive {
+        // The splash is a full-screen page. It needs a terminal on the output too: a log
+        // would otherwise receive the animation and the invisible "Press any key" wait.
+        let animateHere = interactive && (outputIsTTY ?? (isatty(out.fd) == 1))
+        if animateHere {
             animate(to: out, frameDelay: frameDelay)
         } else {
             out.line(splashText)
@@ -165,7 +173,7 @@ enum Boot {
         guard !plan.winComPresent else { return }
         out.line(missingWinText)
         out.line(pressKeyText)
-        // The original sat on "Press any key". Redirected input must never hang the shell.
-        if interactive && Console.isTTY { _ = Console.readKey() }
+        // The original sat on "Press any key". Redirected or closed ends never hang.
+        if animateHere { _ = key() }
     }
 }
