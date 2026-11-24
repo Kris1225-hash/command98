@@ -154,9 +154,9 @@ enum QBasicLexer {
                     i += 1
                     while i < chars.count, chars[i].isNumber { i += 1 }
                 }
-                if i < chars.count, chars[i] == "e" || i < chars.count, chars[i] == "E" {
+                if i < chars.count, chars[i] == "e" || chars[i] == "E" {
                     var j = i + 1
-                    if j < chars.count, chars[j] == "+" || j < chars.count, chars[j] == "-" { j += 1 }
+                    if j < chars.count, chars[j] == "+" || chars[j] == "-" { j += 1 }
                     let digits = j
                     while j < chars.count, chars[j].isNumber { j += 1 }
                     if j > digits { i = j }
@@ -191,8 +191,13 @@ enum QBasicLexer {
 }
 
 struct QBasicExpressionParser {
+    private static let maximumDepth = 128
+    private static let maximumNodes = 1_024
+
     private let tokens: [QBasicToken]
     private(set) var position = 0
+    private var depth = 0
+    private var nodes = 0
 
     init(_ source: String) throws {
         tokens = try QBasicLexer.tokens(source)
@@ -243,6 +248,17 @@ struct QBasicExpressionParser {
         guard isAtEnd else { throw QBasicProblem("Syntax error") }
     }
 
+    private mutating func enter() throws {
+        guard depth < Self.maximumDepth else { throw QBasicProblem("Expression too complex") }
+        depth += 1
+    }
+
+    private mutating func node(_ expression: QBasicExpression) throws -> QBasicExpression {
+        guard nodes < Self.maximumNodes else { throw QBasicProblem("Expression too complex") }
+        nodes += 1
+        return expression
+    }
+
     mutating func parseComplete() throws -> QBasicExpression {
         let value = try parseExpression()
         try finish()
@@ -261,12 +277,16 @@ struct QBasicExpressionParser {
         return QBasicLValue(name, indices: indices)
     }
 
-    mutating func parseExpression() throws -> QBasicExpression { try parseOr() }
+    mutating func parseExpression() throws -> QBasicExpression {
+        try enter()
+        defer { depth -= 1 }
+        return try parseOr()
+    }
 
     private mutating func parseOr() throws -> QBasicExpression {
         var left = try parseAnd()
         while matchIdentifier("OR") {
-            left = .binary("OR", left, try parseAnd())
+            left = try node(.binary("OR", left, try parseAnd()))
         }
         return left
     }
@@ -274,13 +294,17 @@ struct QBasicExpressionParser {
     private mutating func parseAnd() throws -> QBasicExpression {
         var left = try parseNot()
         while matchIdentifier("AND") {
-            left = .binary("AND", left, try parseNot())
+            left = try node(.binary("AND", left, try parseNot()))
         }
         return left
     }
 
     private mutating func parseNot() throws -> QBasicExpression {
-        if matchIdentifier("NOT") { return .unary("NOT", try parseNot()) }
+        if matchIdentifier("NOT") {
+            try enter()
+            defer { depth -= 1 }
+            return try node(.unary("NOT", try parseNot()))
+        }
         return try parseComparison()
     }
 
@@ -288,7 +312,7 @@ struct QBasicExpressionParser {
         var left = try parseAdditive()
         while let op = peekComparison() {
             advance()
-            left = .binary(op, left, try parseAdditive())
+            left = try node(.binary(op, left, try parseAdditive()))
         }
         return left
     }
@@ -303,7 +327,7 @@ struct QBasicExpressionParser {
         while check("+") || check("-") {
             let op = check("+") ? "+" : "-"
             advance()
-            left = .binary(op, left, try parseMultiplicative())
+            left = try node(.binary(op, left, try parseMultiplicative()))
         }
         return left
     }
@@ -319,20 +343,32 @@ struct QBasicExpressionParser {
                 op = symbol
                 advance()
             }
-            left = .binary(op, left, try parseUnary())
+            left = try node(.binary(op, left, try parseUnary()))
         }
         return left
     }
 
     private mutating func parseUnary() throws -> QBasicExpression {
-        if match("-") { return .unary("-", try parseUnary()) }
-        if match("+") { return .unary("+", try parseUnary()) }
+        if match("-") {
+            try enter()
+            defer { depth -= 1 }
+            return try node(.unary("-", try parseUnary()))
+        }
+        if match("+") {
+            try enter()
+            defer { depth -= 1 }
+            return try node(.unary("+", try parseUnary()))
+        }
         return try parsePower()
     }
 
     private mutating func parsePower() throws -> QBasicExpression {
         let base = try parsePrimary()
-        if match("^") { return .binary("^", base, try parseUnary()) }
+        if match("^") {
+            try enter()
+            defer { depth -= 1 }
+            return try node(.binary("^", base, try parseUnary()))
+        }
         return base
     }
 
@@ -340,10 +376,10 @@ struct QBasicExpressionParser {
         switch peek {
         case .number(let n):
             advance()
-            return .number(n)
+            return try node(.number(n))
         case .string(let s):
             advance()
-            return .string(s)
+            return try node(.string(s))
         case .identifier(let name):
             advance()
             if match("(") {
@@ -353,13 +389,13 @@ struct QBasicExpressionParser {
                 }
                 try expect(")")
                 if QBasicLanguage.functions.contains(name) {
-                    return .function(name, args)
+                    return try node(.function(name, args))
                 }
                 guard !args.isEmpty else { throw QBasicProblem("Syntax error") }
-                return .array(name, args)
+                return try node(.array(name, args))
             }
-            if name == "RND" || name == "INKEY$" { return .function(name, []) }
-            return .variable(name)
+            if name == "RND" || name == "INKEY$" { return try node(.function(name, [])) }
+            return try node(.variable(name))
         case .symbol("("):
             advance()
             let value = try parseExpression()
@@ -505,7 +541,8 @@ struct QBasicSourceParser {
         if let open = dos.last { throw QBasicProblem("DO without LOOP", line: statements[open].line) }
     }
 
-    private static func parseStatement(_ original: String) throws -> QBasicStatementKind {
+    private static func parseStatement(_ original: String, depth: Int = 0) throws -> QBasicStatementKind {
+        guard depth < 64 else { throw QBasicProblem("Program too complex") }
         let text = original.trimmingCharacters(in: .whitespacesAndNewlines)
         if text == "?" || text.hasPrefix("?") { return try parsePrint(String(text.dropFirst())) }
         let head = head(text)
@@ -558,7 +595,7 @@ struct QBasicSourceParser {
         case "RANDOMIZE":
             if rest.trimmingCharacters(in: .whitespaces).isEmpty { return .randomize(nil) }
             return .randomize(try QBasicExpressionParser.expression(rest))
-        case "IF": return try parseIF(rest)
+        case "IF": return try parseIF(rest, depth: depth)
         case "ELSE":
             try requireEmpty(rest)
             return .else
@@ -649,7 +686,7 @@ struct QBasicSourceParser {
         return .input(prompt: prompt, line: line, variables: variables)
     }
 
-    private static func parseIF(_ rest: String) throws -> QBasicStatementKind {
+    private static func parseIF(_ rest: String, depth: Int) throws -> QBasicStatementKind {
         let chars = Array(rest)
         guard let thenRange = keywordRange("THEN", in: chars) else { throw QBasicProblem("Syntax error") }
         let conditionText = String(chars[..<thenRange.lowerBound])
@@ -663,18 +700,18 @@ struct QBasicSourceParser {
             thenText = String(Array(tail)[..<elseRange.lowerBound])
             elseText = String(Array(tail)[elseRange.upperBound...])
         }
-        let thenStatements = try parseInline(thenText)
-        let elseStatements = elseText.isEmpty ? [] : try parseInline(elseText)
+        let thenStatements = try parseInline(thenText, depth: depth)
+        let elseStatements = elseText.isEmpty ? [] : try parseInline(elseText, depth: depth)
         return .ifSingle(condition, thenStatements, elseStatements)
     }
 
-    private static func parseInline(_ text: String) throws -> [QBasicStatement] {
+    private static func parseInline(_ text: String, depth: Int) throws -> [QBasicStatement] {
         var result: [QBasicStatement] = []
         for fragment in colonFragments(stripComment(text)) {
             let part = fragment.trimmingCharacters(in: .whitespaces)
             if part.isEmpty { continue }
             if isREM(part) { break }
-            let kind = try parseStatement(part)
+            let kind = try parseStatement(part, depth: depth + 1)
             switch kind {
             case .ifBlock, .else, .endIf, .for, .next, .while, .wend, .do, .loop:
                 throw QBasicProblem("Syntax error")

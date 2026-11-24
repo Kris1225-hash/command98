@@ -65,6 +65,9 @@ enum QBasic {
             let program = try QBasicSourceParser.parse(source)
             try QBasicInterpreter(program: program, io: io).execute()
             return 0
+        } catch let interrupt as QBasicInterrupt {
+            io.write("Break in line \(interrupt.line)\n")
+            return 2
         } catch let problem as QBasicProblem {
             io.write(problem.display + "\n")
             return 1
