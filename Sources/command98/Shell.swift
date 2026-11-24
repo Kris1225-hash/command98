@@ -462,7 +462,7 @@ final class Shell {
         let tok = String(t[..<end])
         let rest = String(t[end...])
         let up = tok.uppercased()
-        if Shell.table[up] != nil { return (tok, rest, up) }
+        if Shell.commands[up] != nil { return (tok, rest, up) }
         for b in Shell.namesByLength where up.hasPrefix(b) && up.count > b.count {
             let i = up.index(up.startIndex, offsetBy: b.count)
             if ".\\:[]".contains(up[i]) {
@@ -490,7 +490,7 @@ final class Shell {
         }
 
         let (name, rest, builtin) = splitCommand(t)
-        if let b = builtin, let fn = Shell.table[b] {
+        if let b = builtin, let fn = Shell.commands[b] {
             let args = Tok.args(rest)
             if args.first == "/?" {
                 io.out.write(Shell.helpText(b))
