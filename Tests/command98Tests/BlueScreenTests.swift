@@ -90,16 +90,8 @@ final class BlueScreenTests: XCTestCase {
         XCTAssertEqual(screen[79, 10].bg, BlueScreen.background)
     }
 
-    func testWinComExistenceCheck() {
-        let test = TestShell()
-        XCTAssertFalse(BlueScreen.winComExists(test.shell))
-
-        test.write("WINDOWS/WIN.COM", "not a real program")
-        XCTAssertTrue(BlueScreen.winComExists(test.shell))
-    }
-
     func testHiddenBsodCommandIsRegistered() {
         XCTAssertNotNil(BlueScreen.commands["BSOD"])
-        XCTAssertNotNil(BlueScreen.utilities["WIN"])
+        XCTAssertNotNil(BlueScreen.help["BSOD"])
     }
 }

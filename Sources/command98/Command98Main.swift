@@ -1,6 +1,8 @@
 import Foundation
 
-
+/// Program entry point, kept in the library target so the test target can link the module.
+/// The thin executable target in Sources/command98CLI calls this.
+public func command98Main() {
 installSignalHandlers()
 
 let fm = FileManager.default
@@ -62,7 +64,7 @@ if let text = try? String(contentsOfFile: cfgPath, encoding: .utf8) {
 
 // MARK: arguments
 
-var argv = Array(CommandLine.arguments.dropFirst())
+let argv = Array(CommandLine.arguments.dropFirst())
 var runC: String? = nil
 var runK: String? = nil
 var permanent = false
@@ -181,3 +183,5 @@ if let k = runK { shell.runLine(k) }
 
 shell.interactive()
 exit(shell.errorLevel)
+
+}
