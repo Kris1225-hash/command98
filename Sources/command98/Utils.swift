@@ -1,8 +1,9 @@
 import Foundation
 
 
-/// Extra DOS attributes that macOS has no flag for (system, cleared archive) and volume
-/// labels live in extended attributes, so they survive across sessions.
+/// Extra DOS attributes the host file system has no flag for, plus volume labels, live
+/// in extended attributes (NTFS alternate data streams on Windows) so they survive
+/// across sessions.
 enum Attr {
     static let key = "com.command98.attr"
     static let labelKey = "com.command98.label"
@@ -34,7 +35,7 @@ var gKeyb = "US"
 extension Shell {
     // MARK: stubs and dispatch
 
-    static let utilities: [String: (Shell) -> (Ctx) -> Void] = [
+    static let coreUtilities: [String: (Shell) -> (Ctx) -> Void] = [
         "ATTRIB": Shell.uAttrib, "CHKDSK": Shell.uChkdsk, "CHOICE": Shell.uChoice, "DELTREE": Shell.uDeltree,
         "DISKCOPY": Shell.uDiskcopy, "DOSKEY": Shell.uDoskey, "EDIT": Shell.uEdit, "FC": Shell.uFc,
         "FDISK": Shell.uFdisk, "FIND": Shell.uFind, "FORMAT": Shell.uFormat, "KEYB": Shell.uKeyb,
@@ -46,7 +47,7 @@ extension Shell {
     ]
 
     /// (folder under the drive root, file name, size of the real Win98 SE file in bytes)
-    static let stubFiles: [(String, String, Int)] = [
+    static let coreStubFiles: [(String, String, Int)] = [
         ("", "COMMAND.COM", 93890),
         ("WINDOWS", "COMMAND.COM", 93890), ("WINDOWS", "WIN.COM", 24791), ("WINDOWS", "SETVER.EXE", 18939),
         ("WINDOWS", "EMM386.EXE", 125495), ("WINDOWS", "SMARTDRV.EXE", 45379),
@@ -64,7 +65,6 @@ extension Shell {
         ("WINDOWS\\COMMAND", "SYS.COM", 18967), ("WINDOWS\\COMMAND", "XCOPY.EXE", 3878),
         ("WINDOWS\\COMMAND", "XCOPY32.EXE", 3878), ("WINDOWS\\COMMAND", Platform.hostUtility + ".COM", 2026),
     ]
-    static let stubVersion = "1"
 
     /// A stub starts with "C98U NAME". Rename it and it still runs NAME, like renaming a real .EXE.
     static func stubName(_ d: Data) -> String? {
@@ -444,7 +444,7 @@ extension Shell {
             return
         }
         c.out.line()
-        c.out.line("No. Formatting disks is Disk Utility's job, and it asks more questions first.")
+        c.out.line("No. Formatting disks is Disk Management's job, and it asks more questions first.")
         errorLevel = 4
     }
 
@@ -464,7 +464,7 @@ extension Shell {
     }
 
     func uScandisk(_ c: Ctx) {
-        c.out.line("ScanDisk only knows FAT. For APFS, use First Aid in Disk Utility.")
+        c.out.line("ScanDisk only knows FAT. For NTFS, use Error checking in the drive's Properties.")
         errorLevel = 1
     }
 
@@ -490,8 +490,8 @@ extension Shell {
         #endif
     }
 
-    /// MAC command [args]: run a macOS program straight from the host PATH, skipping the DOS
-    /// search order (so `MAC find . -name x` gets the Unix find, not FIND.EXE).
+    /// The host escape hatch: run a program straight from the host PATH, skipping the DOS
+    /// search order. Windows calls it NT and hands the line to cmd.exe.
     func uMac(_ c: Ctx) {
         #if os(Windows)
         // NT dir /s, NT ipconfig: hand the whole line to the real cmd.exe, built-ins and all

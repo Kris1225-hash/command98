@@ -1,6 +1,8 @@
 import Foundation
 
-
+/// Program entry point, kept in the library target so the test target can link the module.
+/// The thin executable target in Sources/command98CLI calls this.
+public func command98Main() {
 installSignalHandlers()
 
 let fm = FileManager.default
@@ -17,11 +19,11 @@ func usage() {
       /K command   Run the command, then stay.
       /P           Permanent: EXIT does nothing.
       /Y           Step through batch files line by line.
-      --real       C:\\ is the real root (/). The sandbox moves to S:.
+      --real       every real drive letter is itself. The sandbox moves to the first free letter.
       --sandbox    C:\\ is the sandbox folder (the default).
-      --mount X=p  Mount a mac folder as drive X:.
+      --mount X=p  Mount a folder as drive X:.
 
-    Config lives in ~/.command98.ini.
+    Config lives in %USERPROFILE%\\.command98.ini.
 
     """)
 }
@@ -32,9 +34,9 @@ let cfgPath = home + "/.command98.ini"
 if !fm.fileExists(atPath: cfgPath) {
     let defaultConfig = """
     ; command98 drive map. one drive per line: LETTER=path
-    ; C: is a sandbox folder unless REAL=yes, which makes C:\\ the real root (/)
-    ; and moves the sandbox to S:.
-    ; DEL on the sandbox deletes for real. on every other drive it goes to the trash.
+    ; C: is a sandbox folder unless REAL=yes, which mounts every real drive letter
+    ; and moves the sandbox to the first free letter.
+    ; DEL on the sandbox deletes for real. on every other drive it goes to the Recycle Bin.
     C=~/DOSROOT
     ; D=~/Downloads
     REAL=no
@@ -62,7 +64,7 @@ if let text = try? String(contentsOfFile: cfgPath, encoding: .utf8) {
 
 // MARK: arguments
 
-var argv = Array(CommandLine.arguments.dropFirst())
+let argv = Array(CommandLine.arguments.dropFirst())
 var runC: String? = nil
 var runK: String? = nil
 var permanent = false
@@ -148,6 +150,7 @@ Shell.installStubs(root: URL(fileURLWithPath: sandboxRoot))
 let shell = Shell(drives: drives)
 shell.permanent = permanent
 shell.stepMode = step
+shell.config = ConfigSys.apply(shell)
 
 // the Win98 defaults: C:\WINDOWS and C:\WINDOWS\COMMAND first in PATH, COMSPEC at the root
 if let (sl, _) = drives.hostToDos(URL(fileURLWithPath: sandboxRoot).resolvingSymlinksInPath().path) {
@@ -155,6 +158,11 @@ if let (sl, _) = drives.hostToDos(URL(fileURLWithPath: sandboxRoot).resolvingSym
     shell.envSet("PATH", "\(sl):\\WINDOWS;\(sl):\\WINDOWS\\COMMAND" + (hostDirs.isEmpty ? "" : ";" + hostDirs))
     shell.envSet("COMSPEC", "\(sl):\\COMMAND.COM")
     shell.envSet("WINDIR", "\(sl):\\WINDOWS")
+}
+
+// the boot splash belongs to an interactive start, not to /C
+if runC == nil {
+    Boot.run(shell)
 }
 
 if let c = runC {
@@ -175,3 +183,5 @@ if let k = runK { shell.runLine(k) }
 
 shell.interactive()
 exit(shell.errorLevel)
+
+}
