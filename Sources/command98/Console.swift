@@ -14,7 +14,15 @@ final class Out {
     init(_ fd: Int32) { self.fd = fd }
 
     func raw(_ bytes: [UInt8]) { Platform.writeAll(fd, bytes) }
-    func write(_ s: String) { raw(Array(s.utf8)) }
+
+    func write(_ s: String) {
+        let encoded = AnsiSys.encode(s, fd: fd)
+        raw(Array(encoded.utf8))
+    }
+
+    /// Shell-owned escape sequences (clear screen, full-screen tools). ANSI.SYS is not
+    /// involved: these are the console driver's own control codes.
+    func control(_ s: String) { raw(Array(s.utf8)) }
     func line(_ s: String = "") { write(s + "\n") }
 }
 

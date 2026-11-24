@@ -13,5 +13,11 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)],
             linkerSettings: [.linkedLibrary("Shell32", .when(platforms: [.windows]))]
         ),
+        .testTarget(
+            name: "command98Tests",
+            dependencies: ["command98"],
+            path: "Tests/command98Tests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )
