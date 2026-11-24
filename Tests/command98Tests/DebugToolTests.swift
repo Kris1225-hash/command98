@@ -195,6 +195,72 @@ final class DebugToolTests: XCTestCase {
         XCTAssertFalse(session.hasImage)
     }
 
+    func testLoadOversizedFileIsRefusedWithoutReading() {
+        let shell = TestShell()
+        var reads = 0
+        let huge = DebugPath(dosPath: "C:\\HUGE.BIN",
+                             url: shell.root.appendingPathComponent("HUGE.BIN"),
+                             exists: true,
+                             readOnly: false,
+                             size: 4_000_000_000,
+                             inside: true,
+                             rootPath: shell.root.path)
+        let files = DebugFiles(resolve: { _ in huge },
+                               read: { _, _ in
+                                   reads += 1
+                                   return Data([0x90])
+                               },
+                               write: { _, _ in })
+        let (session, sink) = make([], files: files)
+        session.execute("N C:\\HUGE.BIN")
+        session.execute("L")
+
+        XCTAssertEqual(reads, 0, "a file that cannot fit must not be read at all")
+        XCTAssertTrue(sink.text.contains("File too large for memory"), sink.text)
+        XCTAssertFalse(session.hasImage)
+    }
+
+    func testLoadModestFileThatOverflowsMemoryIsRefused() throws {
+        let shell = TestShell()
+        let url = shell.root.appendingPathComponent("BIG.BIN")
+        try Data(repeating: 0x90, count: 0x10001).write(to: url)
+        #if !os(Windows)
+        // Unreadable to a normal user: the size check must answer before any read attempt.
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        }
+        #endif
+
+        let (session, sink) = make([], files: DebugTool.files(for: shell.shell))
+        session.execute("N C:\\BIG.BIN")
+        session.execute("L")
+
+        XCTAssertTrue(sink.text.contains("File too large for memory"), sink.text)
+        XCTAssertFalse(sink.text.contains("Error reading file"), sink.text)
+        XCTAssertFalse(session.hasImage)
+        XCTAssertEqual(session.loadedLength, 0)
+        XCTAssertEqual(session.memory[0x100], 0)
+    }
+
+    func testLoadFileThatExactlyFillsMemorySucceeds() throws {
+        let shell = TestShell()
+        let url = shell.root.appendingPathComponent("FULL.BIN")
+        let size = 0x10000 - 0x100
+        try Data(repeating: 0x5A, count: size).write(to: url)
+
+        let (session, sink) = make([], files: DebugTool.files(for: shell.shell))
+        session.execute("N C:\\FULL.BIN")
+        session.execute("L")
+
+        XCTAssertTrue(sink.text.isEmpty, sink.text)
+        XCTAssertTrue(session.hasImage)
+        XCTAssertEqual(session.loadedLength, size)
+        XCTAssertEqual(session.regs.cx, UInt16(size))
+        XCTAssertEqual(session.memory[0x100], 0x5A)
+        XCTAssertEqual(session.memory[0xFFFF], 0x5A)
+    }
+
     // MARK: W
 
     private func writeFile(_ shell: TestShell, _ name: String, _ data: [UInt8]) throws -> URL {
@@ -272,17 +338,15 @@ final class DebugToolTests: XCTestCase {
     func testWriteOutsideMountedDrivesRefuses() throws {
         let shell = TestShell()
         let url = try writeFile(shell, "OK.COM", [1, 2, 3, 4])
-        // An unmounted drive is the Windows way to name a path outside the sandbox; on
-        // POSIX use a symlink leaving C:.
-        let outside: String
         #if os(Windows)
-        outside = "Z:\\passwd"
+        // An unmounted drive is the Windows way to name a path outside the sandbox.
+        let outside = "Z:\\passwd"
         let refusal = "Invalid drive specification"
         #else
         let link = shell.root.appendingPathComponent("OUT")
         try FileManager.default.createSymbolicLink(at: link,
                                                    withDestinationURL: URL(fileURLWithPath: "/etc"))
-        outside = "C:\\OUT\\passwd"
+        let outside = "C:\\OUT\\passwd"
         let refusal = "Access denied"
         #endif
 
@@ -298,6 +362,176 @@ final class DebugToolTests: XCTestCase {
 
         XCTAssertTrue(sink.text.contains(refusal), sink.text)
         XCTAssertEqual(try Data(contentsOf: url), Data([1, 2, 3, 4]))
+    }
+
+    #if os(Windows)
+    /// Windows can represent a retarget with a file symbolic link, which also avoids
+    /// Foundation's recursive directory-symlink removal. The link is retargeted while the
+    /// confirmation prompt is up; the opened handle must still be refused.
+    func testWriteRetargetedAliasIsRefusedAfterConfirmation() throws {
+        let shell = TestShell()
+        let loaded = try writeFile(shell, "OK.COM", [1, 2, 3, 4])
+        let safe = try writeFile(shell, "SAFE.DAT", [7, 7, 7, 7])
+
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("command98-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let outsideVictim = outside.appendingPathComponent("VICTIM")
+        let original = Data([0xCA, 0xFE, 0xBA, 0xBE])
+        try original.write(to: outsideVictim)
+
+        let alias = shell.root.appendingPathComponent("ALIAS.DAT")
+        do {
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: safe)
+        } catch {
+            throw XCTSkip("symbolic links unavailable: \(error)")
+        }
+
+        var asked = false, retargeted = false
+        let (session, sink) = make([], files: DebugTool.files(for: shell.shell)) { _ in
+            asked = true
+            try? FileManager.default.removeItem(at: alias)
+            if (try? FileManager.default.createSymbolicLink(at: alias,
+                                                            withDestinationURL: outsideVictim)) != nil {
+                retargeted = true
+            }
+            return true
+        }
+        session.execute("N C:\\OK.COM")
+        session.execute("L")
+        session.execute("E 100 AA BB CC DD")
+        session.execute("N C:\\ALIAS.DAT")
+        session.execute("W")
+
+        XCTAssertTrue(asked)
+        if !retargeted { throw XCTSkip("could not retarget a symbolic link") }
+        XCTAssertTrue(sink.text.contains("Access denied"), sink.text)
+        XCTAssertFalse(sink.text.contains("bytes written"), sink.text)
+        XCTAssertEqual(try Data(contentsOf: outsideVictim), original)
+        XCTAssertEqual(try Data(contentsOf: safe), Data([7, 7, 7, 7]))
+        XCTAssertEqual(try Data(contentsOf: loaded), Data([1, 2, 3, 4]))
+    }
+    #else
+    /// The link is retargeted while the confirmation prompt is up. The write must follow
+    /// the descriptor it opened and checked, not the path.
+    func testWriteRetargetedLinkIsRefusedAfterConfirmation() throws {
+        let shell = TestShell()
+        let loaded = try writeFile(shell, "OK.COM", [1, 2, 3, 4])
+
+        let safe = shell.root.appendingPathComponent("SAFE", isDirectory: true)
+        try FileManager.default.createDirectory(at: safe, withIntermediateDirectories: true)
+        let safeVictim = safe.appendingPathComponent("VICTIM")
+        try Data([7, 7, 7, 7]).write(to: safeVictim)
+
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("command98-outside-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let outsideVictim = outside.appendingPathComponent("VICTIM")
+        let original = Data([0xCA, 0xFE, 0xBA, 0xBE])
+        try original.write(to: outsideVictim)
+
+        let link = shell.root.appendingPathComponent("LINK")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: safe)
+
+        var asked = false
+        let (session, sink) = make([], files: DebugTool.files(for: shell.shell)) { _ in
+            asked = true
+            // Answer Y after pointing the link outside the mounted drive.
+            try? FileManager.default.removeItem(at: link)
+            try? FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+            return true
+        }
+        session.execute("N C:\\OK.COM")
+        session.execute("L")
+        session.execute("E 100 AA BB CC DD")
+        session.execute("N C:\\LINK\\VICTIM")
+        session.execute("W")
+
+        XCTAssertTrue(asked)
+        XCTAssertTrue(sink.text.contains("Access denied"), sink.text)
+        XCTAssertFalse(sink.text.contains("bytes written"), sink.text)
+        XCTAssertEqual(try Data(contentsOf: outsideVictim), original)
+        XCTAssertEqual(try Data(contentsOf: safeVictim), Data([7, 7, 7, 7]))
+        XCTAssertEqual(try Data(contentsOf: loaded), Data([1, 2, 3, 4]))
+    }
+
+    #endif
+
+    func testWriteThroughFinalSymlinkIsRefused() throws {
+        let shell = TestShell()
+        let real = try writeFile(shell, "REAL.COM", [1, 2, 3, 4])
+        let alias = shell.root.appendingPathComponent("ALIAS.COM")
+        do {
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        } catch {
+            throw XCTSkip("symbolic links unavailable: \(error)")
+        }
+
+        let (session, sink) = make([], files: DebugTool.files(for: shell.shell)) { _ in true }
+        session.execute("N C:\\ALIAS.COM")
+        session.execute("L")
+        XCTAssertEqual(session.loadedLength, 4)
+        session.execute("E 100 AA BB CC DD")
+        session.execute("W")
+
+        XCTAssertTrue(sink.text.contains("Access denied"), sink.text)
+        XCTAssertEqual(try Data(contentsOf: real), Data([1, 2, 3, 4]))
+    }
+
+    func testWriteRefusesFileMadeReadOnlyDuringConfirmation() throws {
+        let shell = TestShell()
+        let original: [UInt8] = [1, 2, 3, 4]
+        let url = try writeFile(shell, "FROZEN.COM", original)
+        let (session, sink) = make([], files: DebugTool.files(for: shell.shell)) { _ in
+            Platform.setAttributes(url.path, readOnly: true)
+            return true
+        }
+        defer { Platform.setAttributes(url.path, readOnly: false) }
+        session.execute("N C:\\FROZEN.COM")
+        session.execute("L")
+        session.execute("E 100 AA BB CC DD")
+        session.execute("W")
+
+        XCTAssertTrue(sink.text.contains("read-only"), sink.text)
+        XCTAssertEqual(try Data(contentsOf: url), Data(original))
+    }
+
+    func testWriteStillCreatesMissingFile() throws {
+        let shell = TestShell()
+        _ = try writeFile(shell, "SRC.COM", [1, 2, 3, 4])
+        let created = shell.root.appendingPathComponent("NEW.COM")
+
+        let (session, sink) = make([], files: DebugTool.files(for: shell.shell)) { _ in true }
+        session.execute("N C:\\SRC.COM")
+        session.execute("L")
+        session.execute("N C:\\NEW.COM")
+        session.execute("W")
+
+        XCTAssertEqual(try Data(contentsOf: created), Data([1, 2, 3, 4]))
+        XCTAssertTrue(sink.text.contains("4 bytes written to C:\\NEW.COM"), sink.text)
+    }
+
+    /// A configured drive path may differ in case from what the volume stores; that must
+    /// not look like an escape.
+    func testWriteAcceptsDriveRootTypedInAnotherCase() throws {
+        let shell = TestShell()
+        let url = try writeFile(shell, "CASE.COM", [1, 2, 3, 4])
+        let other = shell.root.path.lowercased()
+        guard other != shell.root.path,
+              FileManager.default.fileExists(atPath: other) else {
+            throw XCTSkip("this volume is case-sensitive")
+        }
+        let path = DebugPath(dosPath: "C:\\CASE.COM",
+                             url: url,
+                             exists: true,
+                             readOnly: false,
+                             size: 4,
+                             inside: true,
+                             rootPath: other)
+        try DebugTool.writeFile(path, Data([9, 9, 9, 9]))
+        XCTAssertEqual(try Data(contentsOf: url), Data([9, 9, 9, 9]))
     }
 
     // MARK: control flow and errors

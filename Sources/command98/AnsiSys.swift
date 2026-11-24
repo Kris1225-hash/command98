@@ -12,11 +12,19 @@ enum AnsiSys {
     static var foreground: UInt8 = 7
     static var background: UInt8 = 0
 
-    /// The tail of an escape sequence that has not arrived yet. Kept across write calls.
-    private static var pending = ""
+    /// The tail of an escape sequence that has not arrived yet, keyed by destination file
+    /// descriptor. A write to fd 1 must never complete a sequence started on fd 2: they
+    /// are different streams, and the kernel interleaves them independently.
+    private static var pending: [Int32: String] = [:]
+
+    /// A tail longer than this cannot be a real escape sequence, so keeping it would only
+    /// let a malformed stream grow the buffer without bound (and recopy it on every
+    /// write). Past the cap the tail is passed through unchanged and the buffer starts
+    /// clean, which is deterministic and loses no bytes.
+    private static let maxPending = 256
 
     /// DOS set the bright foreground bit when a bold SGR arrived, so remember it.
-    private static var bold = false
+    static private(set) var bold = false
 
     private static let esc: Character = "\u{1B}"
     private static let arrow: Character = "\u{2190}"
@@ -34,7 +42,7 @@ enum AnsiSys {
     /// Back to the attribute a freshly booted screen has: light grey on black.
     static func reset() {
         resetAttribute()
-        pending = ""
+        pending.removeAll()
     }
 
     /// The attribute half of reset, for callers that must not disturb a half-written
@@ -53,20 +61,31 @@ enum AnsiSys {
         return "\u{1B}[\(f);\(b)m"
     }
 
-    /// Hand back (and forget) a sequence that was left unfinished. The shell never calls
-    /// this on its own; a caller uses it only when it knows no more output is coming.
-    static func flush() -> String {
-        let tail = pending
-        pending = ""
+    /// Hand back (and forget) the sequence left unfinished on `fd`. Callers use this only
+    /// when they know no more output is coming for that descriptor, because the returned
+    /// bytes still have to be written.
+    static func flush(_ fd: Int32) -> String {
+        let tail = pending.removeValue(forKey: fd) ?? ""
         guard !tail.isEmpty, !loaded else { return tail }
         return tail.replacingOccurrences(of: String(esc), with: String(arrow))
     }
 
+    /// Hand back every unfinished sequence, file descriptors in ascending order. Call this
+    /// before the process exits, or before writing control output that bypasses the
+    /// driver on the same descriptor, so a half-written sequence is neither dropped nor
+    /// reordered behind later bytes.
+    static func flushAll() -> String {
+        pending.keys.sorted().reduce(into: "") { $0 += flush($1) }
+    }
+
+    /// Kept for callers written before the buffers were keyed by descriptor; drains them
+    /// all. Prefer `flushAll()` or `flush(_:)`.
+    static func flush() -> String { flushAll() }
+
     /// Called by Out.write for every normal write. `control` output skips this.
     static func encode(_ s: String, fd: Int32) -> String {
-        // Finish whatever the previous write had to abandon.
-        let input = pending + s
-        pending = ""
+        // Finish whatever the previous write on this descriptor had to abandon.
+        let input = (pending.removeValue(forKey: fd) ?? "") + s
 
         guard loaded else {
             // Without the driver DOS echoed the escape introducer as a left arrow and the
@@ -87,7 +106,7 @@ enum AnsiSys {
 
             // A lone introducer at the end of a write is the start of the next one.
             guard i + 1 < chars.count else {
-                pending = String(chars[i...])
+                hold(chars[i...], fd: fd, into: &out)
                 break
             }
 
@@ -97,7 +116,7 @@ enum AnsiSys {
                 while j < chars.count, isIntermediate(chars[j]) { j += 1 }
                 guard j < chars.count else {
                     // ESC [ 1 ; 3 with no final byte yet.
-                    pending = String(chars[i...])
+                    hold(chars[i...], fd: fd, into: &out)
                     break
                 }
                 guard isFinal(chars[j]) else {
@@ -123,6 +142,18 @@ enum AnsiSys {
             i += 2
         }
         return out
+    }
+
+    /// Remember a sequence that stopped mid-way so the next write on `fd` can finish it.
+    /// A tail past `maxPending` is not something we can finish usefully: pass it through
+    /// unchanged and start clean, so the buffer stays bounded and no bytes are invented
+    /// or dropped. A truncated stream can therefore lose the split, not the data.
+    private static func hold(_ tail: ArraySlice<Character>, fd: Int32, into out: inout String) {
+        if tail.count > maxPending {
+            out.append(contentsOf: tail)
+        } else {
+            pending[fd] = String(tail)
+        }
     }
 
     // MARK: - CSI

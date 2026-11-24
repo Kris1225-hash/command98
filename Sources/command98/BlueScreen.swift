@@ -17,6 +17,7 @@ enum BlueScreen {
     static let background: UInt8 = 1
     static let text: UInt8 = 7
     static let bright: UInt8 = 15
+    static let pressKeyText = "Press any key to return to the command prompt."
 
     /// Hidden BSOD command: the page, on demand, independent of WIN.COM.
     static func bsodHandler(_ shell: Shell) -> (Ctx) -> Void {
@@ -53,21 +54,38 @@ enum BlueScreen {
             (18, "Cause: STARTUP_COMPONENT_MISSING", text),
             (20, "If this screen appears again, check that WIN.COM is present in", text),
             (21, "C:\\WINDOWS and can be read.", text),
-            (23, "Press any key to return to the command prompt.", text),
+            (23, pressKeyText, text),
         ]
     }
 
-    /// Draws the page and, on a terminal, waits for one key. Redirected input is not
-    /// waited on: the page is written and the caller gets control back.
+    /// The page as plain lines, for a log rather than a terminal. The interactive prompt
+    /// is dropped because a redirected run never waits for a key.
+    static func plainText(reason: String = "") -> [String] {
+        layout(reason: reason)
+            .map(\.text)
+            .filter { !$0.isEmpty && $0 != pressKeyText }
+    }
+
+    /// Draws the page and, on a terminal, waits for one key. A redirected run (either end)
+    /// gets the plain text instead: no escape codes and no invisible key wait.
     static func show(_ out: Out, reason: String = "") {
-        let screen = makeScreen(reason: reason)
-        guard Console.isTTY else {
-            screen.render(to: out)
+        guard Console.isFullScreen(out) else {
+            for line in plainText(reason: reason) { out.line(line) }
             return
         }
+        let screen = makeScreen(reason: reason)
         Screen.begin(out)
         defer { Screen.end(out) }
         screen.render(to: out)
         Console.withRaw { _ = KeyReader.read(fd: 0) }
+    }
+}
+
+extension Console {
+    /// Full-screen tools read keys and paint a page, so both of their ends must be a real
+    /// terminal. Checking only stdin misses `QBASIC > OUT.TXT`, which would otherwise paint
+    /// the page into the file and swallow the key wait.
+    static func isFullScreen(_ out: Out, inputIsTTY: Bool = Console.isTTY) -> Bool {
+        inputIsTTY && Platform.isTTY(out.fd)
     }
 }

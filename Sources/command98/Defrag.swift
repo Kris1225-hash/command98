@@ -250,6 +250,12 @@ enum Defrag {
 
             guard frameNumber < total - 1 else { break }
             tick(frameNumber)
+            // ^C during the sleep sets the shell-wide flag; treat it like Esc and clear it
+            // so the next command does not inherit the interrupt.
+            if gInterrupted != 0 {
+                gInterrupted = 0
+                return .cancelled
+            }
             if let pressed = key(), pressed == .escape || pressed == .interrupt {
                 return .cancelled
             }
@@ -282,7 +288,7 @@ enum Defrag {
 
     /// Esc, or any byte already waiting. Keys other than Esc are ignored by the animation.
     static func pollKey() -> Key? {
-        guard Console.pending(0) else { return nil }
+        guard KeyReader.hasBufferedKey(fd: 0) else { return nil }
         return KeyReader.read()
     }
 
@@ -306,7 +312,7 @@ extension Shell {
             errorLevel = 1
             return
         }
-        guard c.io.inFD == 0, Console.isTTY else {
+        guard c.io.inFD == 0, Console.isFullScreen(c.out) else {
             c.out.line("DEFRAG needs an interactive console. No files were moved.")
             errorLevel = 1
             return

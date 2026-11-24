@@ -19,7 +19,8 @@ final class Screen {
     init(width: Int = 80, height: Int = 25, ch: Character = " ", fg: UInt8 = 7, bg: UInt8 = 0) {
         self.width = max(1, width)
         self.height = max(1, height)
-        self.cells = Array(repeating: ScreenCell(ch: ch, fg: fg, bg: bg), count: self.width * self.height)
+        let cell = ScreenCell(ch: Screen.sanitize(ch), fg: fg, bg: bg)
+        self.cells = Array(repeating: cell, count: self.width * self.height)
     }
 
     subscript(x: Int, y: Int) -> ScreenCell {
@@ -29,12 +30,15 @@ final class Screen {
         }
         set {
             guard x >= 0, x < width, y >= 0, y < height else { return }
-            cells[y * width + x] = newValue
+            var cell = newValue
+            cell.ch = Screen.sanitize(cell.ch)
+            cells[y * width + x] = cell
         }
     }
 
     func clear(ch: Character = " ", fg: UInt8 = 7, bg: UInt8 = 0) {
-        cells = Array(repeating: ScreenCell(ch: ch, fg: fg, bg: bg), count: width * height)
+        let cell = ScreenCell(ch: Screen.sanitize(ch), fg: fg, bg: bg)
+        cells = Array(repeating: cell, count: width * height)
     }
 
     /// A snapshot for animation frames and tests.
@@ -44,24 +48,43 @@ final class Screen {
         return s
     }
 
+    /// A screen cell holds one visible glyph. Raw file bytes reach `put`/`write`, so
+    /// C0 controls, DEL and C1 controls must never survive into the page: a repaint
+    /// would otherwise hand the terminal an escape sequence or a tab that breaks the
+    /// fixed 80-column layout. Tabs are layout, not glyphs, and are rejected here;
+    /// `write` expands them at eight-column stops.
+    static func sanitize(_ ch: Character) -> Character {
+        if ch == "\t" { return " " }
+        for scalar in ch.unicodeScalars where scalar.properties.generalCategory == .control {
+            return "\u{00B7}" // middle dot: visible, printable, and not a terminal control
+        }
+        return ch
+    }
+
     func put(_ x: Int, _ y: Int, _ ch: Character, fg: UInt8 = 7, bg: UInt8 = 0, blink: Bool = false) {
         self[x, y] = ScreenCell(ch: ch, fg: fg, bg: bg, blink: blink)
     }
 
-    /// Writes a string at x,y. A newline moves to the start of the next row; the cursor
-    /// never leaves the page. Returns the column after the last character.
+    /// Writes a string at x,y. A newline moves to the start of the next row and a tab
+    /// advances to the next eight-column stop; the cursor never leaves the page.
+    /// Returns the column after the last character.
     @discardableResult
     func write(_ x: Int, _ y: Int, _ s: String, fg: UInt8 = 7, bg: UInt8 = 0) -> Int {
         var cx = x, cy = y
         for ch in s {
-            if ch == "\n" {
+            // Swift treats CR-LF as one grapheme, so check for it before the lone CR.
+            if ch == "\n" || ch == "\r\n" {
                 cx = x
                 cy += 1
                 continue
             }
             if ch == "\r" { cx = x; continue }
+            if ch == "\t" {
+                cx = min(((cx / 8) + 1) * 8, width)
+                continue
+            }
             put(cx, cy, ch, fg: fg, bg: bg)
-            cx += 1
+            cx = min(cx + 1, width)
         }
         return cx
     }

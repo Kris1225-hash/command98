@@ -125,6 +125,35 @@ final class DefragTests: XCTestCase {
         XCTAssertFalse(bytes.contains("Defragmentation complete."))
     }
 
+    func testCtrlCStopsThePassLikeEscapeAndClearsTheFlag() {
+        gInterrupted = 0
+        var ticks = 0
+        let bytes = capture { out in
+            let outcome = Defrag.run(drive: "C", out: out, frames: 8, tick: { _ in
+                ticks += 1
+                if ticks == 2 { gInterrupted = 1 }
+            }, key: { nil })
+            XCTAssertEqual(outcome, .cancelled)
+        }
+
+        XCTAssertEqual(gInterrupted, 0, "the interrupt flag must not leak to the next command")
+        XCTAssertTrue(bytes.contains("\u{1B}[?1049l"))
+        XCTAssertTrue(bytes.contains("\u{1B}[?25h"))
+        XCTAssertTrue(bytes.contains("Defrag cancelled. No files were moved."))
+        XCTAssertFalse(bytes.contains("Defragmentation complete."))
+        XCTAssertLessThan(ticks, 8, "the pass stopped early")
+    }
+
+    func testRedirectedOutputIsRefusedBeforeDrawing() {
+        let t = TestShell()
+        let output = capture { out in
+            let ctx = Ctx(name: "DEFRAG", rest: " C:", args: ["C:"], io: IO(inFD: 0, out: out))
+            Defrag.utilities["DEFRAG"]?(t.shell)(ctx)
+        }
+        XCTAssertTrue(output.contains("DEFRAG needs an interactive console. No files were moved."))
+        XCTAssertFalse(output.contains("\u{1B}[?1049h"))
+    }
+
     /// The command is cosmetic. If it ever reached for a file, this would notice.
     func testSentinelFilesAreUntouched() throws {
         let t = TestShell()

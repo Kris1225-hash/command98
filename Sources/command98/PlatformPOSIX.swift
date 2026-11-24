@@ -133,8 +133,12 @@ enum Platform {
         }
     }
 
-    static func pending(_ ms: Int32) -> Bool {
-        var p = pollfd(fd: 0, events: Int16(POLLIN), revents: 0)
+    static func pending(_ ms: Int32) -> Bool { pending(0, ms) }
+
+    /// Is a byte waiting on this descriptor? Used by the shared key decoder, which tests
+    /// drive with a pipe as well as the console.
+    static func pending(_ fd: Int32, _ ms: Int32) -> Bool {
+        var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         return poll(&p, 1, ms) > 0
     }
 

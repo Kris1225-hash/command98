@@ -1,4 +1,7 @@
 import Foundation
+#if os(macOS)
+import Darwin
+#endif
 
 /// DEBUG.EXE, in-process. The classic dash prompt, a 64 KiB scratch segment, and just
 /// enough of an assembler to poke at bytes. Files are real files, but nothing is written
@@ -8,26 +11,43 @@ enum DebugFileError: Error {
     case invalidDrive
 }
 
+/// Why a write was refused after the target had already been opened. Every one of these
+/// means the file was left exactly as it was.
+enum DebugWriteError: Error {
+    /// the opened file is not under the mounted drive root
+    case outsideDrive
+    /// the final path component is a link
+    case symlink
+    /// the opened file does not allow writing
+    case readOnly
+    case writeFailed
+}
+
 /// A name resolved through the DOS drive table, plus the few facts DEBUG cares about.
 struct DebugPath {
     let dosPath: String
     let url: URL
     let exists: Bool
     let readOnly: Bool
+    /// size in bytes, or nil when it cannot be determined
+    let size: Int?
     /// false when the real path (after links) leaves every mounted drive
     let inside: Bool
+    /// the real path of the mounted drive root this name belongs to
+    let rootPath: String
 }
 
 /// Everything the session needs from the outside world, kept behind closures so tests can
 /// hand it a drive table or nothing at all.
 struct DebugFiles {
     var resolve: (String) throws -> DebugPath
-    var read: (DebugPath) -> Data?
+    /// Reads at most `limit` bytes; nil when the file cannot be opened.
+    var read: (DebugPath, Int) -> Data?
     var write: (DebugPath, Data) throws -> Void
 
     static let unavailable = DebugFiles(
         resolve: { _ in throw DebugFileError.invalidDrive },
-        read: { _ in nil },
+        read: { _, _ in nil },
         write: { _, _ in throw DebugFileError.invalidDrive }
     )
 }
@@ -200,14 +220,7 @@ final class DebugSession {
             output("File not found - \(path.dosPath)\n")
             return
         }
-        guard let data = files.read(path) else {
-            output("Error reading file - \(path.dosPath)\n")
-            return
-        }
-        guard data.count + start.flat <= 0x10000 else {
-            output("File too large for memory\n")
-            return
-        }
+        guard let data = loadData(path, at: start) else { return }
         for (i, byte) in data.enumerated() {
             memory[(start.flat + i) & 0xFFFF] = byte
         }
@@ -216,6 +229,26 @@ final class DebugSession {
         hasImage = true
         regs.bx = UInt16((data.count >> 16) & 0xFFFF)
         regs.cx = UInt16(data.count & 0xFFFF)
+    }
+
+    /// Reads the file only when it can still fit. The size is checked before any read, and
+    /// the read itself is capped one byte past what fits so an unknown or growing size can
+    /// never pull a huge file into memory just to reject it.
+    private func loadData(_ path: DebugPath, at start: DebugAddress) -> Data? {
+        let room = 0x10000 - start.flat
+        if let size = path.size, size > room {
+            output("File too large for memory\n")
+            return nil
+        }
+        guard let data = files.read(path, room + 1) else {
+            output("Error reading file - \(path.dosPath)\n")
+            return nil
+        }
+        guard data.count <= room else {
+            output("File too large for memory\n")
+            return nil
+        }
+        return data
     }
 
     // MARK: D
@@ -606,6 +639,12 @@ final class DebugSession {
         }
         do {
             try files.write(target, data)
+        } catch DebugWriteError.outsideDrive, DebugWriteError.symlink {
+            output("Access denied - \(target.dosPath)\n")
+            return
+        } catch DebugWriteError.readOnly {
+            output("File is read-only - \(target.dosPath)\n")
+            return
         } catch {
             output("Write failed - \(target.dosPath)\n")
             return
@@ -797,25 +836,177 @@ enum DebugTool {
                     throw DebugFileError.invalidDrive
                 }
                 let url = shell.drives.url(resolved)
-                // follow links and ask the drive table whether the destination is still
-                // inside a mounted drive; that works the same with NTFS junctions and
-                // with POSIX symlinks, and needs no path spelling assumptions.
+                let root = shell.drives.table[resolved.letter]!.root
+                    .standardizedFileURL.resolvingSymlinksInPath().path
                 let real = url.standardizedFileURL.resolvingSymlinksInPath().path
-                let inside = shell.drives.hostToDos(real) != nil
                 var isDirectory: ObjCBool = false
                 let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
                     && !isDirectory.boolValue
+                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+                let size = attributes?[.size] as? Int
                 let readOnly = exists && !Platform.isWritable(url.path)
                 return DebugPath(
                     dosPath: shell.drives.dosPath(resolved.letter, resolved.comps, long: true),
                     url: url,
                     exists: exists,
                     readOnly: readOnly,
-                    inside: inside
+                    size: size,
+                    inside: shell.drives.hostToDos(real) != nil,
+                    rootPath: root
                 )
             },
-            read: { path in FileManager.default.contents(atPath: path.url.path) },
-            write: { path, data in try data.write(to: path.url) }
+            read: { path, limit in
+                guard let handle = FileHandle(forReadingAtPath: path.url.path) else { return nil }
+                defer { try? handle.close() }
+                do {
+                    return try handle.read(upToCount: limit) ?? Data()
+                } catch {
+                    return nil
+                }
+            },
+            write: { path, data in try writeFile(path, data) }
         )
     }
+
+    /// True when `path` (already resolved) stays inside the mounted drive rooted at `root`.
+    static func isInside(_ path: String, root: String) -> Bool {
+        root == "/" ? path.hasPrefix("/") : (path == root || path.hasPrefix(root + "/"))
+    }
+
+    /// Writes through a descriptor that was opened once and then checked, so a link
+    /// retargeted after the confirmation prompt cannot redirect the write. The file is not
+    /// truncated until the descriptor is known to be a plain writable file inside the drive.
+    static func writeFile(_ path: DebugPath, _ data: Data) throws {
+        #if os(Windows)
+        try writeFileWindows(path, data)
+        #elseif os(macOS)
+        let (fd, created) = try openTarget(path.url.path)
+        defer { close(fd) }
+
+        var nameBuffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard fcntl(fd, F_GETPATH, &nameBuffer) >= 0 else {
+            throw DebugWriteError.writeFailed
+        }
+        let opened = String(cString: nameBuffer)
+        // F_GETPATH already gives a kernel path with every link resolved; running it back
+        // through URL resolution would rewrite /private/var to /var and break containment.
+        let canonical = opened
+
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw DebugWriteError.writeFailed
+        }
+        // The descriptor is the authority; the path from F_GETPATH must still name it and
+        // must still land inside the drive. Both paths are kernel vnode paths, so a root
+        // typed with a different case than the volume stores still compares correctly.
+        var named = stat()
+        let stillNamesIt = stat(canonical, &named) == 0
+            && named.st_dev == info.st_dev && named.st_ino == info.st_ino
+        guard let root = canonicalDirectory(path.rootPath),
+              isInside(canonical, root: root),
+              stillNamesIt else {
+            // Only remove a file this call created when the path is proven to still name it.
+            discardIfCreated(created && stillNamesIt, canonical)
+            throw DebugWriteError.outsideDrive
+        }
+        guard info.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH) != 0 else {
+            throw DebugWriteError.readOnly
+        }
+        guard ftruncate(fd, 0) == 0 else { throw DebugWriteError.writeFailed }
+        try writeAll(fd, data)
+        #else
+        // This branch is the Windows port; DEBUG writes on other POSIX hosts are
+        // implemented by their own platform branch.
+        throw DebugWriteError.writeFailed
+        #endif
+    }
+
+    #if os(Windows)
+    /// Windows counterpart of the descriptor check above. CreateFileW follows reparse
+    /// points in parent components, so the opened handle's final path is what decides
+    /// containment; the handle stays the authority after the confirmation prompt.
+    ///
+    /// Residual window: GetFinalPathNameByHandleW and the first write happen on the same
+    /// handle, so retargeting the name cannot redirect the data. A file created by this
+    /// call is deleted by handle if the containment check fails.
+    private static func writeFileWindows(_ path: DebugPath, _ data: Data) throws {
+        let file: (fd: Int32, finalPath: String, created: Bool)
+        switch Platform.openForWriteNoTruncate(path.url.path) {
+        case .opened(let fd, let finalPath, let created):
+            file = (fd, finalPath, created)
+        case .readOnly:
+            throw DebugWriteError.readOnly
+        case .link:
+            throw DebugWriteError.symlink
+        case .failed:
+            throw DebugWriteError.writeFailed
+        }
+        defer { Platform.closeFD(file.fd) }
+
+        guard let root = Platform.finalPath(of: path.rootPath),
+              Platform.isPath(file.finalPath, insideRoot: root) else {
+            // Delete exactly the file this call created, by handle, so a retargeted path
+            // cannot make the cleanup remove somebody else's file.
+            if file.created { _ = Platform.deleteOpenFile(file.fd) }
+            throw DebugWriteError.outsideDrive
+        }
+        guard Platform.truncateFD(file.fd) else { throw DebugWriteError.writeFailed }
+        guard Platform.writeAllChecked(file.fd, Array(data)) else {
+            throw DebugWriteError.writeFailed
+        }
+    }
+    #endif
+
+    #if os(macOS)
+    /// The kernel's own path for a directory, in the case the volume stores. Nothing is
+    /// written when it cannot be determined.
+    private static func canonicalDirectory(_ path: String) -> String? {
+        let fd = open(path, O_RDONLY | O_DIRECTORY)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard fcntl(fd, F_GETPATH, &buffer) >= 0 else { return nil }
+        return String(cString: buffer)
+    }
+
+    private static func openTarget(_ path: String) throws -> (Int32, Bool) {
+        var fd = open(path, O_WRONLY | O_NOFOLLOW)
+        if fd >= 0 { return (fd, false) }
+        guard errno == ENOENT else { throw writeError(errno) }
+        fd = open(path, O_WRONLY | O_NOFOLLOW | O_CREAT | O_EXCL, 0o644)
+        if fd >= 0 { return (fd, true) }
+        guard errno == EEXIST else { throw writeError(errno) }
+        fd = open(path, O_WRONLY | O_NOFOLLOW)
+        guard fd >= 0 else { throw writeError(errno) }
+        return (fd, false)
+    }
+
+    private static func writeError(_ code: Int32) -> DebugWriteError {
+        switch code {
+        case ELOOP: return .symlink
+        case EACCES, EPERM, EROFS: return .readOnly
+        default: return .writeFailed
+        }
+    }
+
+    /// A file this call created and then refused to fill is not left behind.
+    private static func discardIfCreated(_ created: Bool, _ path: String) {
+        if created { unlink(path) }
+    }
+
+    private static func writeAll(_ fd: Int32, _ data: Data) throws {
+        try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                let written = Darwin.write(fd, base + offset, buffer.count - offset)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw DebugWriteError.writeFailed
+                }
+                offset += written
+            }
+        }
+    }
+    #endif
 }

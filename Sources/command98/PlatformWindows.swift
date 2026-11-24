@@ -18,6 +18,15 @@ private func fileTimeDate(_ ft: FILETIME) -> Date {
     return Date(timeIntervalSince1970: Double(t) / 10_000_000 - 11_644_473_600)
 }
 
+/// The result of opening a DEBUG write target without truncating it. The handle has
+/// already been checked for reparse points and directories when `.opened` comes back.
+enum PlatformWriteOpen {
+    case opened(fd: Int32, finalPath: String, created: Bool)
+    case readOnly
+    case link
+    case failed
+}
+
 /// Console handler: ^C and ^Break set the flag the long-running loops check, and we stay alive.
 private func ctrlHandler(_ type: DWORD) -> WindowsBool {
     if type == DWORD(CTRL_C_EVENT) || type == DWORD(CTRL_BREAK_EVENT) {
@@ -133,6 +142,34 @@ enum Platform {
     static func closeFD(_ fd: Int32) { _ = _close(fd) }
     static func dupFD(_ fd: Int32) -> Int32 { _dup(fd) }
 
+    /// DEBUG writes binary data and must know whether the whole buffer went out.
+    static func writeAllChecked(_ fd: Int32, _ bytes: [UInt8]) -> Bool {
+        bytes.withUnsafeBufferPointer { buf in
+            var off = 0
+            while off < buf.count {
+                let n = _write(fd, buf.baseAddress! + off, UInt32(buf.count - off))
+                if n <= 0 { return false }
+                off += Int(n)
+            }
+            return true
+        }
+    }
+
+    static func truncateFD(_ fd: Int32) -> Bool { _chsize_s(fd, 0) == 0 }
+
+    /// Marks the file behind `fd` for deletion when it is closed. The handle, not a path,
+    /// is the identity, so a renamed or retargeted path cannot make this remove another
+    /// file. The descriptor must have been opened with DELETE access.
+    static func deleteOpenFile(_ fd: Int32) -> Bool {
+        guard let h = HANDLE(bitPattern: _get_osfhandle(fd)) else { return false }
+        var info = FILE_DISPOSITION_INFO()
+        // DeleteFile is the first BOOLEAN field; writing the byte avoids depending on
+        // whether this SDK imports BOOLEAN as UInt8 or a Swift Bool wrapper.
+        withUnsafeMutableBytes(of: &info) { $0[0] = 1 }
+        return SetFileInformationByHandle(h, FileDispositionInfo, &info,
+                                          DWORD(MemoryLayout<FILE_DISPOSITION_INFO>.size))
+    }
+
     // MARK: console input
 
     private static var stdinHandle: HANDLE? { GetStdHandle(STD_INPUT_HANDLE) }
@@ -177,6 +214,12 @@ enum Platform {
         var b: UInt8 = 0
         let n = _read(fd, &b, 1)
         return n == 1 ? Int(b) : -1
+    }
+
+    /// Is a byte waiting on this descriptor? Only the console is pollable here; redirected
+    /// input is read straight through, so the key decoder never needs to peek at it.
+    static func pending(_ fd: Int32, _ ms: Int32) -> Bool {
+        fd == 0 && pending(ms)
     }
 
     /// Is a keypress waiting? Focus and mouse events wake the handle too, so skip those.
@@ -263,6 +306,106 @@ enum Platform {
         guard off > 0, off < 1 << 20, (try? h.seek(toOffset: off)) != nil,
               let sig = try? h.read(upToCount: 4) else { return false }
         return [UInt8](sig) == [0x50, 0x45, 0, 0]
+    }
+
+    // MARK: final paths for DEBUG's write containment
+
+    private static func finalPath(_ h: HANDLE) -> String? {
+        var buf = [WCHAR](repeating: 0, count: 32_768)
+        let n = GetFinalPathNameByHandleW(h, &buf, DWORD(buf.count), DWORD(FILE_NAME_NORMALIZED))
+        guard n > 0, n < DWORD(buf.count) else { return nil }
+        return String(decoding: buf.prefix(Int(n)), as: UTF16.self)
+    }
+
+    /// The kernel's final, link-resolved path for an existing file or directory.
+    static func finalPath(of path: String) -> String? {
+        let h = CreateFileW(wide(native(path)), DWORD(FILE_READ_ATTRIBUTES),
+                            DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE), nil,
+                            DWORD(OPEN_EXISTING), DWORD(FILE_FLAG_BACKUP_SEMANTICS), nil)
+        guard h != INVALID_HANDLE_VALUE else { return nil }
+        defer { CloseHandle(h) }
+        return finalPath(h)
+    }
+
+    /// Case- and separator-insensitive containment for `\\?\` paths returned above.
+    static func isPath(_ path: String, insideRoot root: String) -> Bool {
+        func clean(_ p: String) -> String {
+            var s = native(p)
+            if s.hasPrefix("\\\\?\\UNC\\") {
+                s = "\\\\" + String(s.dropFirst(8))
+            } else if s.hasPrefix("\\\\?\\") {
+                s = String(s.dropFirst(4))
+            }
+            while s.count > 3, s.hasSuffix("\\") { s.removeLast() }
+            return s.lowercased()
+        }
+        let p = clean(path), r = clean(root)
+        guard !r.isEmpty else { return false }
+        if p == r { return true }
+        return p.hasPrefix(r.hasSuffix("\\") ? r : r + "\\")
+    }
+
+    /// Opens a DEBUG write target without truncating it. Existing reparse points are
+    /// refused; a missing file is created new. The returned fd owns the handle.
+    static func openForWriteNoTruncate(_ path: String) -> PlatformWriteOpen {
+        let p = wide(native(path))
+        let share = DWORD(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        let access = DWORD(GENERIC_WRITE) | DWORD(DELETE)
+        // GetLastError returns DWORD; these are the documented system codes we map.
+        let fileNotFound: DWORD = 2, pathNotFound: DWORD = 3, accessDenied: DWORD = 5
+        // Refuse a final reparse point or a directory before asking for write access;
+        // the opened handle is still checked below, so a retarget in between is caught.
+        let existing = GetFileAttributesW(p)
+        if existing != INVALID_FILE_ATTRIBUTES {
+            if existing & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0 { return .link }
+            if existing & DWORD(FILE_ATTRIBUTE_DIRECTORY) != 0 { return .failed }
+        }
+        var created = false
+        var h = CreateFileW(p, access, share, nil, DWORD(OPEN_EXISTING),
+                            DWORD(FILE_ATTRIBUTE_NORMAL) | DWORD(FILE_FLAG_OPEN_REPARSE_POINT), nil)
+        if h == INVALID_HANDLE_VALUE {
+            let err = GetLastError()
+            if err == fileNotFound || err == pathNotFound {
+                h = CreateFileW(p, access, share, nil, DWORD(CREATE_NEW),
+                                DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+                if h != INVALID_HANDLE_VALUE { created = true }
+            }
+        }
+        guard h != INVALID_HANDLE_VALUE else {
+            let err = GetLastError()
+            if err == accessDenied {
+                let attrs = GetFileAttributesW(p)
+                if attrs != INVALID_FILE_ATTRIBUTES && attrs & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    return .link
+                }
+                return .readOnly
+            }
+            return .failed
+        }
+
+        var info = BY_HANDLE_FILE_INFORMATION()
+        guard GetFileInformationByHandle(h, &info) else {
+            CloseHandle(h)
+            return .failed
+        }
+        if info.dwFileAttributes & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            CloseHandle(h)
+            return .link
+        }
+        if info.dwFileAttributes & DWORD(FILE_ATTRIBUTE_DIRECTORY) != 0 {
+            CloseHandle(h)
+            return .failed
+        }
+        guard let final = finalPath(h) else {
+            CloseHandle(h)
+            return .failed
+        }
+        let fd = _open_osfhandle(Int(bitPattern: h), _O_WRONLY | _O_BINARY)
+        guard fd >= 0 else {
+            CloseHandle(h)
+            return .failed
+        }
+        return .opened(fd: fd, finalPath: final, created: created)
     }
 
     // MARK: "extended attributes": NTFS alternate data streams

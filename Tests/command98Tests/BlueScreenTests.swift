@@ -1,4 +1,7 @@
 import XCTest
+#if !os(Windows)
+import Darwin
+#endif
 @testable import command98
 
 final class BlueScreenTests: XCTestCase {
@@ -93,5 +96,38 @@ final class BlueScreenTests: XCTestCase {
     func testHiddenBsodCommandIsRegistered() {
         XCTAssertNotNil(BlueScreen.commands["BSOD"])
         XCTAssertNotNil(BlueScreen.help["BSOD"])
+    }
+
+    // MARK: redirected output
+
+    func testRedirectedShowWritesPlainTextWithoutEscapesOrAKeyWait() {
+        let file = CaptureFile(prefix: "command98-bsod")
+        BlueScreen.show(Out(file.fd), reason: "WIN.COM")
+        file.close()
+        let shown = file.text()
+        file.remove()
+        XCTAssertFalse(shown.contains("\u{1B}"), "a redirected page must not carry escape codes")
+        XCTAssertTrue(shown.contains("*** STOP: 0xC0DE0001"))
+        XCTAssertTrue(shown.contains("The file WIN.COM could not be loaded from C:\\WINDOWS."))
+        XCTAssertTrue(shown.contains("COMMAND98"))
+        XCTAssertFalse(shown.contains(BlueScreen.pressKeyText),
+                       "a redirected page never waits for a key, so it must not ask")
+    }
+
+    func testFullScreenGateNeedsBothEndsToBeTerminals() {
+        let file = CaptureFile(prefix: "command98-gate")
+        defer { file.remove() }
+
+        // A file descriptor is never a terminal, even if it happens to be fd 1.
+        XCTAssertFalse(Console.isFullScreen(Out(file.fd), inputIsTTY: true))
+
+        #if !os(Windows)
+        var master: Int32 = -1
+        var slave: Int32 = -1
+        XCTAssertEqual(openpty(&master, &slave, nil, nil, nil), 0)
+        defer { close(master); close(slave) }
+        XCTAssertFalse(Console.isFullScreen(Out(slave), inputIsTTY: false))
+        XCTAssertTrue(Console.isFullScreen(Out(slave), inputIsTTY: true))
+        #endif
     }
 }
