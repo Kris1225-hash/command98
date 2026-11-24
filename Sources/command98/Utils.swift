@@ -430,7 +430,7 @@ extension Shell {
             return
         }
         c.out.line()
-        c.out.line("No. Formatting disks is Disk Utility's job, and it asks more questions first.")
+        c.out.line("No. Formatting disks is GParted's job, and it asks more questions first.")
         errorLevel = 4
     }
 

@@ -15,7 +15,7 @@ final class KeyTests: XCTestCase {
         XCTAssertEqual(KeyReader.decode(8), .backspace)
         XCTAssertEqual(KeyReader.decode(127), .backspace)
         XCTAssertEqual(KeyReader.decode(3), .interrupt)
-        XCTAssertEqual(KeyReader.decode(26), .eof)
+        XCTAssertEqual(KeyReader.decode(26), .ctrl("Z"))
         XCTAssertEqual(KeyReader.decode(65), .char("A"))
         XCTAssertEqual(KeyReader.decode(1), .ctrl("A"))
     }

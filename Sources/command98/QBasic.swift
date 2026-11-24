@@ -127,7 +127,9 @@ private final class QBasicConsoleIO: QBasicIO {
 
     func key() -> Key? {
         guard io.inFD == 0, KeyReader.hasBufferedKey(fd: 0) else { return nil }
-        return KeyReader.read()
+        // Windows reports the key-down before ReadFile has a byte; line input would make
+        // ReadFile wait for Enter. Raw mode for this one key keeps INKEY$ prompt.
+        return Console.withRaw { KeyReader.read() }
     }
 }
 

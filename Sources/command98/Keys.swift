@@ -145,7 +145,7 @@ enum KeyReader {
         case 9: return .tab
         case 8, 127: return .backspace
         case 3: return .interrupt
-        case 26: return .eof
+        case 26: return .ctrl("Z")
         case 0..<32: return .ctrl(Character(UnicodeScalar(UInt8(b + 64))))
         default:
             guard b < 128 else { return .unknown }
