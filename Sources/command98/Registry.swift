@@ -23,7 +23,6 @@ extension Shell {
             Defrag.utilities,
             ScanDisk.utilities,
             ColorTool.utilities,
-            BlueScreen.utilities,
         ] {
             for (name, fn) in group { t[name] = fn }
         }

@@ -3,51 +3,26 @@ import Foundation
 /// The screen COMMAND98 shows when it is asked to start Windows and the startup file is
 /// not there. No window frame: in 1998 the whole page was the error.
 enum BlueScreen {
-    static let utilities: [String: CommandHandler] = ["WIN": winHandler]
     /// Internal command: always shows the page, without needing a WIN.COM stub. The shell
     /// merges this table into its own dispatch.
     static let commands: [String: CommandHandler] = ["BSOD": bsodHandler]
     static let stubFiles: [(String, String, Int)] = []
     static let help: [String: String] = [
-        "WIN": """
-        Starts Windows. Here, that means the Finder.
-
-        WIN.COM is expected in C:\\WINDOWS. If it is missing, WIN stops at a blue
-        screen instead.
+        "BSOD": """
+        Shows the blue screen. No real fault is required.
         """,
     ]
     static let stubVersion = "1"
 
-    static let winComPath = "C:\\WINDOWS\\WIN.COM"
     static let background: UInt8 = 1
     static let text: UInt8 = 7
     static let bright: UInt8 = 15
 
-    /// WIN is reached through the WIN.COM stub when that file exists. The handler checks
-    /// the real file too, so a WIN.COM that has been removed lands on the blue screen.
-    static func winHandler(_ shell: Shell) -> (Ctx) -> Void {
-        return { ctx in
-            if winComExists(shell) {
-                shell.uWin(ctx)
-            } else {
-                show(ctx.out, reason: "WIN.COM")
-            }
-        }
-    }
-
-    /// Hidden BSOD command: the same page, on demand, independent of WIN.COM.
+    /// Hidden BSOD command: the page, on demand, independent of WIN.COM.
     static func bsodHandler(_ shell: Shell) -> (Ctx) -> Void {
         return { ctx in
             show(ctx.out, reason: "WIN.COM")
         }
-    }
-
-    /// True when C:\WINDOWS\WIN.COM resolves and is a regular file.
-    static func winComExists(_ shell: Shell) -> Bool {
-        guard let r = try? shell.drives.resolve(winComPath), r.exists else { return false }
-        var isDirectory: ObjCBool = false
-        let ok = FileManager.default.fileExists(atPath: shell.drives.url(r).path, isDirectory: &isDirectory)
-        return ok && !isDirectory.boolValue
     }
 
     /// The whole page: blue background, light grey text, a white heading.
