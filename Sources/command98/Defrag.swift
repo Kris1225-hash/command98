@@ -288,7 +288,7 @@ enum Defrag {
 
     /// Esc, or any byte already waiting. Keys other than Esc are ignored by the animation.
     static func pollKey() -> Key? {
-        guard Console.pending(0) else { return nil }
+        guard KeyReader.hasBufferedKey(fd: 0) else { return nil }
         return KeyReader.read()
     }
 

@@ -174,13 +174,8 @@ final class QBasicScreenIO: QBasicIO {
     }
 
     func key() -> Key? {
-        guard Console.pending(0) else { return nil }
-        switch QBasicIDEKeyReader.read() {
-        case .key(let key, _):
-            return key
-        case .alt:
-            return nil
-        }
+        guard KeyReader.hasBufferedKey(fd: 0) else { return nil }
+        return KeyReader.read()
     }
 
     func showContinue() {
