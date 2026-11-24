@@ -120,6 +120,26 @@ final class KeyTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 2.0)
     }
 
+    func testHeldBackByteIsVisibleToPollingCallers() throws {
+        KeyReader.resetDecoders()
+        var fds: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&fds), 0)
+        defer {
+            close(fds[0]); close(fds[1])
+            KeyReader.resetDecoders()
+        }
+        let bytes: [UInt8] = [0x1B, 0x20]
+        let written = bytes.withUnsafeBytes { Darwin.write(fds[1], $0.baseAddress, $0.count) }
+        XCTAssertEqual(written, bytes.count)
+
+        XCTAssertEqual(KeyReader.read(fd: fds[0]), .escape)
+        // The space was read to prove the Esc was bare, then held back. The kernel
+        // descriptor is now empty, so polling it alone would strand the key.
+        XCTAssertTrue(KeyReader.hasBufferedKey(fd: fds[0]))
+        XCTAssertEqual(KeyReader.read(fd: fds[0]), .char(" "))
+        XCTAssertFalse(KeyReader.hasBufferedKey(fd: fds[0]))
+    }
+
     func testMenuLetters() {
         XCTAssertEqual(KeyReader.letter(.char("r")), "R")
         XCTAssertNil(KeyReader.letter(.f(1)))

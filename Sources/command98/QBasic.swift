@@ -110,7 +110,7 @@ private final class QBasicConsoleIO: QBasicIO {
     }
 
     func key() -> Key? {
-        guard io.inFD == 0, Console.pending(0) else { return nil }
+        guard io.inFD == 0, KeyReader.hasBufferedKey(fd: 0) else { return nil }
         return KeyReader.read()
     }
 }

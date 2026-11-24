@@ -61,6 +61,9 @@ struct KeyDecoder {
     /// True while there is another key to read (a held-back byte counts).
     var hasMore: Bool { saved != nil || stream.hasMore() }
 
+    /// True when a byte from a previous read is waiting to be decoded.
+    var hasHeldByte: Bool { saved != nil }
+
     /// One keypress, including any byte a previous read held back.
     mutating func readKey() -> Key {
         let first: Int
@@ -227,6 +230,18 @@ enum KeyReader {
         let key = decoder.readKey()
         decoders[fd] = decoder
         return key
+    }
+
+    /// Forget every per-descriptor decoder. Tests use this between pipes.
+    static func resetDecoders() { decoders.removeAll() }
+
+    /// One key, if one is ready without waiting. A byte held back by a previous escape
+    /// decode counts even though the kernel descriptor is empty; polling callers must use
+    /// this instead of Console.pending, or an Esc+Space pair can strand the space.
+    static func hasBufferedKey(fd: Int32 = 0) -> Bool {
+        if decoders[fd]?.hasHeldByte == true { return true }
+        var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        return poll(&p, 1, 0) > 0
     }
 
     /// Replays a seeded byte stream as if it came from the console. Tests use this;

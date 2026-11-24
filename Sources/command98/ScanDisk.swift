@@ -310,7 +310,7 @@ extension Shell {
 
         let driver = ScanDisk.Driver(
             poll: {
-                guard Console.pending(0) else { return nil }
+                guard KeyReader.hasBufferedKey(fd: 0) else { return nil }
                 return KeyReader.read()
             },
             wait: { Thread.sleep(forTimeInterval: 0.022) }
