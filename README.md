@@ -11,10 +11,13 @@ This is the **macOS** branch. Linux lives on the `linux` branch, and Windows on,
 ## Build and run
 
 ```sh
+swift test
 swift build -c release
 cp .build/release/command98 ~/.local/bin/
 command98
 ```
+
+The tests are the reimplementation's own; no original binaries are needed.
 
 ## Drives
 
@@ -48,14 +51,22 @@ The external commands live where Win98 kept them, as stub files on the sandbox d
 - **Files:** `XCOPY`/`XCOPY32` (`/S /E /I /F /L /H /R /T /U /K /N /D[:date] /A /M /P /W /C /Q /Y`, plus the "file or directory?" question and "Cannot perform a cyclic copy"), `MOVE`, `DELTREE`, `ATTRIB` (`+R` is write permission, `+H` is the Finder's hidden flag, `S` and `A` are stored in an xattr)
 - **Drives:** `SUBST`, `LABEL` (stored in an xattr, so it sticks), `CHKDSK` (looks but never touches)
 - **Shell:** `DOSKEY` (history, editing, F7/F8, macros with `$1-$9 $* $T`), `CHOICE` (`/C /N /S /T`), `COMMAND` (a nested interpreter; `EXIT` comes back), `START` (opens files, folders, apps and URLs), `EDIT` (`$EDITOR`, nano or vi)
+- **Full-screen:** `QBASIC` (the interpreter and the blue IDE; F5 runs the buffer, `QBASIC /RUN file` runs without the editor, three original sample programs are built in), `DEBUG` (the classic `-` prompt: `N`, `L`, `D`, `E`, `A`, `U`, `R`, `W`, `Q`; `W` asks before it writes), `DEFRAG` (the coloured block show; it never opens a file), `SCANDISK` (blue progress, read-only by construction, and it never claims to fix anything)
+- **Colour:** `COLOR 1F` sets white on blue using the DOS attribute byte. ANSI.SYS is live, so `PROMPT $e[1;31m$p$g` works; `CONFIG.SYS` can say `DEVICE=...\ANSI.SYS` for old times' sake.
 - **System:** `MEM` (the classic table, with your real RAM as XMS), `MODE CON COLS= LINES=` (actually resizes the terminal), `KEYB`, `NLSFUNC` (after which `CHCP 850` works)
-- **Retired with dignity:** `FORMAT` asks if you're sure and then refuses. `FDISK`, `SYS`, `SCANDISK`, `DISKCOPY`, `EMM386`, `SMARTDRV` and `SETVER` explain themselves. `WIN` opens the Finder.
+- **Retired with dignity:** `FORMAT` asks if you're sure and then refuses. `FDISK`, `SYS`, `DISKCOPY`, `EMM386`, `SMARTDRV` and `SETVER` explain themselves. `WIN` opens the Finder.
 - **`MAC command`** runs a macOS program directly, skipping the DOS search. A DOS utility name never falls through to the Unix tool of the same name, so use `MAC find . -name x` for that one.
+
+## Startup files
+
+`C:\CONFIG.SYS` is parsed at launch. `FILES=`, `BUFFERS=`, `BUFFERSHIGH=`, `FCBS=`, `LASTDRIVE=`, `STACKS=`, `SHELL=`, `COUNTRY=`, `DOS=`, `BREAK=`, `DEVICE=`, `DEVICEHIGH=`, `INSTALL=` and `SET` are acknowledged and remembered; nothing pretends to allocate conventional memory or load a driver. A `DEVICE=` naming `ANSI.SYS` turns the escape parser on. The file is silent, the way a real one was.
+
+`C:\MSDOS.SYS` is optional. Put `[Options]` and `BootGUI=1` in it to get the `Starting Windows 98...` splash at launch. If `C:\WINDOWS\WIN.COM` is missing, the splash is followed by the failure path; otherwise the prompt comes up as usual. No file means no splash.
 
 ## Faithful quirks, on purpose
 
 - `ECHO OFF` at the prompt hides the prompt.
-- `echo 50% off` prints `50 off`.
+- `echo 50% off` prints `50% off` at the prompt; in a batch file the lone `%` is eaten, so it prints `50 off`.
 - `IF EXIST` is false for directories, so use `IF EXIST DIR\NUL`.
 - `FOR` hands out 8.3 names unless you run `LFNFOR ON`.
 - `CHCP 850` says `NLSFUNC not installed`.
@@ -64,6 +75,7 @@ The external commands live where Win98 kept them, as stub files on the sandbox d
 - `REM > file` creates an empty file.
 - `COPY *.TXT ALL.TXT` concatenates the files.
 - `COPY CON` reads until ^Z.
+- `BSOD` is a hidden internal command, not one of the original 40. The screen and every word on it are ours. `WIN` still needs `WIN.COM`, like 1998.
 
 ## License
 

@@ -141,6 +141,7 @@ Shell.installStubs(root: URL(fileURLWithPath: sandboxRoot))
 let shell = Shell(drives: drives)
 shell.permanent = permanent
 shell.stepMode = step
+shell.config = ConfigSys.apply(shell)
 
 // the Win98 defaults: C:\WINDOWS and C:\WINDOWS\COMMAND first in PATH, COMSPEC at the root
 if let (sl, _) = drives.hostToDos(URL(fileURLWithPath: sandboxRoot).resolvingSymlinksInPath().path) {
@@ -148,6 +149,11 @@ if let (sl, _) = drives.hostToDos(URL(fileURLWithPath: sandboxRoot).resolvingSym
     shell.envSet("PATH", "\(sl):\\WINDOWS;\(sl):\\WINDOWS\\COMMAND" + (hostDirs.isEmpty ? "" : ";" + hostDirs))
     shell.envSet("COMSPEC", "\(sl):\\COMMAND.COM")
     shell.envSet("WINDIR", "\(sl):\\WINDOWS")
+}
+
+// the boot splash belongs to an interactive start, not to /C
+if runC == nil {
+    Boot.run(shell)
 }
 
 if let c = runC {
