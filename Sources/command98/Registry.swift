@@ -7,6 +7,14 @@ typealias CommandHandler = (Shell) -> (Ctx) -> Void
 /// a later group with the same name is the override (that is how SCANDISK gets its screen
 /// and WIN gets its blue screen without touching Utils.swift).
 extension Shell {
+    /// Internal commands are the classic 40 plus any hidden guest (BSOD). External utilities
+    /// still have to exist as stubs; this table is only for commands that are part of the shell.
+    static var commands: [String: CommandHandler] {
+        var t = table
+        for (name, fn) in BlueScreen.commands { t[name] = fn }
+        return t
+    }
+
     static var utilities: [String: CommandHandler] {
         var t = coreUtilities
         for group in [
